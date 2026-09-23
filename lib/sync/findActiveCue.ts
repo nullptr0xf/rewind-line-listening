@@ -48,6 +48,9 @@ export function findNextCueIndex(cues: readonly Cue[], timeMs: number): number {
 
 /** Index of the previous cue — used by "jump to previous line". */
 export function findPreviousCueIndex(cues: readonly Cue[], timeMs: number): number {
+  // Matches findNextCueIndex: an empty transcript has no line to land on, so
+  // callers can uniformly test for a negative index.
+  if (cues.length === 0) return -1
   const index = findCueIndexAtOrBefore(cues, timeMs)
   if (index <= 0) return 0
   // If we are more than 400ms into the current line, restart it instead of
