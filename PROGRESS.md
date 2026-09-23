@@ -242,6 +242,15 @@ are generated from the same arithmetic, so any drift seen later is the player's.
 - Browser check via headless Chrome against the live dev server: `/watch/<id>`
   renders the full left/right split, all 20 transcript lines with timestamps
   `00:01 → 01:36`, and every practice/transport control, with no console errors.
+- `next build` — clean, **no warnings**. All 8 routes emit as expected (`/` and
+  the API routes dynamic, `/_not-found` static). `findProjectRoot()` walks up
+  from `cwd` looking for `package.json`, and Turbopack's tracer flagged that as
+  "traces the whole project"; it now carries a `turbopackIgnore` comment. The
+  access is dynamic by design (the CLI can start from any subdirectory) and this
+  app is never deployed as a bundle, so the warning was noise — and noise that
+  would have hidden the next real warning.
+- `NETSTAT -ano` on the running server: `TCP 127.0.0.1:4317 LISTENING` — invariant
+  #7 confirmed on the wire, not just in the source.
 
 ## 11. Testing
 

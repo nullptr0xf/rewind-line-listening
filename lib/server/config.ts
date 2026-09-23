@@ -12,10 +12,14 @@ function findProjectRoot(): string {
   const override = process.env.EL_PROJECT_ROOT
   if (override) return path.resolve(override)
 
-  let candidate = path.resolve(process.cwd())
+  // turbopackIgnore keeps the build tracer from following this walk. The access
+  // is dynamic by design (the CLI may be started from any subdirectory) and this
+  // app is never deployed as a bundle, so tracing the whole project is pure
+  // noise — and it would hide real warnings behind it.
+  let candidate = path.resolve(/* turbopackIgnore: true */ process.cwd())
   for (let depth = 0; depth < 4; depth += 1) {
     const manifest = path.join(candidate, 'package.json')
-    if (fs.existsSync(manifest)) {
+    if (fs.existsSync(/* turbopackIgnore: true */ manifest)) {
       try {
         const parsed = JSON.parse(fs.readFileSync(manifest, 'utf8')) as { name?: string }
         if (parsed.name === 'english-listening') return candidate
@@ -27,7 +31,7 @@ function findProjectRoot(): string {
     if (parent === candidate) break
     candidate = parent
   }
-  return path.resolve(process.cwd())
+  return path.resolve(/* turbopackIgnore: true */ process.cwd())
 }
 
 export const PROJECT_ROOT = findProjectRoot()
