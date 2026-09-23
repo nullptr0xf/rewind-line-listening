@@ -1,0 +1,8 @@
+{
+  "$comment": "Local-only configuration for the ingest pipeline. Everything is optional; defaults are used when a key is missing.",
+  "toolsDir": "tools",
+  "managedMediaDir": "data/media",
+  "allowedRoots": [],
+  "ffprobePath": null,
+  "ffmpegPath": null
+}

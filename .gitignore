@@ -1,0 +1,37 @@
+# dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# next.js
+.next/
+out/
+next-env.d.ts
+*.tsbuildinfo
+
+# runtime data (never commit: contains local DB + imported media)
+data/
+
+# local toolchain binaries (ffmpeg / ffprobe / whisper.cpp / models)
+tools/
+
+# test media: the video files are large binaries, the hand-written VTTs are
+# tracked on purpose (they are test fixtures)
+testmedia/*
+!testmedia/*.vtt
+!testmedia/*.srt
+!testmedia/README.md
+
+# env + logs
+.env
+.env*.local
+*.log
+npm-debug.log*
+yarn-error.log*
+
+# editor / os
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db

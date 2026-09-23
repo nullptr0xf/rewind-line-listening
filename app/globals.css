@@ -1,0 +1,73 @@
+@import 'tailwindcss';
+
+@theme {
+  --color-ink-950: #0b0d10;
+  --color-ink-900: #12151a;
+  --color-ink-850: #171b21;
+  --color-ink-800: #1d222a;
+  --color-ink-700: #2a313c;
+  --color-ink-600: #3a424f;
+  --color-ink-500: #5b6472;
+  --color-ink-400: #8a93a1;
+  --color-ink-300: #b6bdc8;
+  --color-ink-200: #d8dde4;
+  --color-ink-100: #eef1f5;
+
+  --color-accent-400: #6aa6ff;
+  --color-accent-500: #3d84f7;
+  --color-accent-600: #2b6ad4;
+
+  --font-sans:
+    ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial,
+    'Noto Sans', sans-serif;
+  --font-mono: ui-monospace, 'Cascadia Mono', 'SF Mono', Menlo, Consolas, monospace;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background-color: var(--color-ink-950);
+  color: var(--color-ink-100);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  overscroll-behavior: none;
+}
+
+/* The transcript panel does its own scrolling; keep the scrollbar unobtrusive. */
+.scroll-thin {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-ink-600) transparent;
+}
+.scroll-thin::-webkit-scrollbar {
+  width: 10px;
+}
+.scroll-thin::-webkit-scrollbar-track {
+  background: transparent;
+}
+.scroll-thin::-webkit-scrollbar-thumb {
+  background-color: var(--color-ink-600);
+  border: 3px solid transparent;
+  background-clip: content-box;
+  border-radius: 999px;
+}
+.scroll-thin::-webkit-scrollbar-thumb:hover {
+  background-color: var(--color-ink-500);
+}
+
+/* Rendered only while the user is manually browsing: "jump back to current line". */
+@keyframes cue-pop {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+.animate-cue-pop {
+  animation: cue-pop 140ms ease-out;
+}
