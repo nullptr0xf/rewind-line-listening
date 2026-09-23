@@ -76,6 +76,8 @@ export type IngestReport = {
   absPath: string
   cueCount: number
   transcriptSource: TranscriptSource
+  /** Where the transcript came from, when it came from a file on disk. */
+  transcriptPath: string | null
   warnings: string[]
   probe: {
     available: boolean
@@ -215,8 +217,6 @@ export async function ingestFile(options: IngestOptions): Promise<IngestReport> 
         cueCount: existingByDigest.cue_count,
       })
       warnings.push(`This file was already imported from ${existingByDigest.source_path}; re-pointed to the new location.`)
-    } else {
-      warnings.push('This file was already imported; reusing the existing lesson.')
     }
 
     notify('done')
@@ -228,6 +228,7 @@ export async function ingestFile(options: IngestOptions): Promise<IngestReport> 
       absPath,
       cueCount: existingByDigest.cue_count,
       transcriptSource: existingByDigest.transcript_source as TranscriptSource,
+      transcriptPath: null,
       warnings,
       probe: {
         available: false,
@@ -251,6 +252,7 @@ export async function ingestFile(options: IngestOptions): Promise<IngestReport> 
   notify('subtitle')
   let cues: Cue[] = []
   let transcriptSource: TranscriptSource = 'none'
+  let transcriptPath: string | null = null
   let engine: string | null = null
   let model: string | null = null
 
@@ -269,9 +271,9 @@ export async function ingestFile(options: IngestOptions): Promise<IngestReport> 
       const result = readSubtitle(explicit)
       cues = result.cues
       transcriptSource = result.source
+      transcriptPath = explicit
       engine = path.basename(explicit)
       warnings.push(...result.warnings)
-      warnings.push(`Loaded transcript from ${explicit}`)
     } else if (probe.embeddedSubtitles.length > 0) {
       warnings.push(
         `This file has ${probe.embeddedSubtitles.length} embedded subtitle stream(s), but extraction is part of M1. No transcript loaded yet.`,
@@ -332,6 +334,7 @@ export async function ingestFile(options: IngestOptions): Promise<IngestReport> 
     absPath,
     cueCount: cues.length,
     transcriptSource,
+    transcriptPath,
     warnings,
     probe: {
       available: probe.available,

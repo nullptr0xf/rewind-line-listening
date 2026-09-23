@@ -19,6 +19,7 @@ export type IngestReport = {
   absPath: string
   cueCount: number
   transcriptSource: string
+  transcriptPath: string | null
   warnings: string[]
   probe: {
     available: boolean
@@ -141,6 +142,11 @@ export function ImportPanel({ onImported }: ImportPanelProps) {
                 : 'No transcript found yet'}
             </span>
           </p>
+          {report.transcriptPath ? (
+            <p className="mt-1 truncate font-mono text-[10px] text-ink-500">
+              {report.transcriptPath}
+            </p>
+          ) : null}
           {report.warnings.length > 0 ? (
             <ul className="mt-2 space-y-1">
               {report.warnings.map((warning) => (

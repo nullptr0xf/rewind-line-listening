@@ -29,6 +29,10 @@ testmedia/*
 npm-debug.log*
 yarn-error.log*
 
+# scratch: browser-test screenshots, saved HTML dumps
+_shots/
+_tmp_*
+
 # editor / os
 .vscode/*
 !.vscode/extensions.json

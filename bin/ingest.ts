@@ -221,6 +221,9 @@ async function importOne(
         ? `${report.cueCount} lines from ${report.transcriptSource}`
         : dim('no transcript yet')
     process.stdout.write(`  ${lines}\n`)
+    if (report.transcriptPath) {
+      process.stdout.write(`  ${dim(report.transcriptPath)}\n`)
+    }
 
     if (report.probe.available) {
       process.stdout.write(
@@ -269,7 +272,9 @@ async function main(): Promise<number> {
 
   if (args.list || !args.target) {
     showLibrary()
-    if (!args.target) process.stdout.write(`${dim('Tip: pass a file or folder path, or use --help.')}\n`)
+    if (!args.target && !args.list) {
+      process.stdout.write(`${dim('Tip: pass a file or folder path, or use --help.')}\n`)
+    }
     return 0
   }
 
