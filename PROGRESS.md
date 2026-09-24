@@ -49,7 +49,7 @@ from the LAN.
 | Area | State |
 |---|---|
 | Import by path (HTTP + CLI) | works, shares one pipeline |
-| Native OS file dialog ("Browse…") | implemented, **not yet exercised** — see §7 |
+| Native OS file dialog ("Browse…") | works — **was silently broken until 2026-09-24**, see §12 |
 | ffprobe metadata probe | works (reads `tools/ffprobe.exe`) |
 | Sidecar `.vtt` / `.srt` discovery + parsing | works |
 | Content fingerprint, re-import dedupe, re-point on move/rename | works |
@@ -123,10 +123,10 @@ several sections avoiding.
 
 ## 7. Not yet verified — do this next
 
-1. **The native file dialog** (`POST /api/ingest/pick`). It spawns PowerShell +
-   `System.Windows.Forms.OpenFileDialog`, which blocks until the dialog closes.
-   Nothing has opened it yet. If it misbehaves, the paste-a-path input is the
-   fallback and works today.
+1. ~~**The native file dialog** (`POST /api/ingest/pick`).~~ **Resolved 2026-09-24 —
+   it never worked.** It is fixed and verified to block on a real dialog; see §12
+   for what was wrong. Still worth one human pass: pick a file through it and
+   confirm the import lands.
 2. **Player feel, by a human.** Range maths and SSR output are verified by
    request, but nobody has watched the highlight track the audio, dragged the
    scrubber, or sat on a loop. This is M0's actual acceptance criterion:
@@ -251,6 +251,13 @@ are generated from the same arithmetic, so any drift seen later is the player's.
   would have hidden the next real warning.
 - `NETSTAT -ano` on the running server: `TCP 127.0.0.1:4317 LISTENING` — invariant
   #7 confirmed on the wire, not just in the source.
+- `POST /api/ingest/pick`, before the fix → `200 {path:null,cancelled:true}` in
+  **0.8s** (a working dialog cannot answer that fast; this is the measurement that
+  proved the dialog never opened).
+- the same call after the fix → **still pending at 14s**, i.e. blocked on a real
+  dialog. Also caught an intermediate attempt that exited cleanly in 5.5s with no
+  dialog (minimised owner form — see §12.2).
+- `next build` after the 2026-09-24 fixes — clean, no warnings.
 
 ## 11. Testing
 
@@ -277,3 +284,82 @@ Not yet under test — these need a real process or a real browser:
 `ingestFile()` end to end (covered manually via the CLI instead),
 `probe.ts` (needs the ffprobe binary), and everything under `hooks/`
 and `components/`.
+
+## 12. 2026-09-24 — first human pass over the player
+
+The user listened to the fixture for the first time. Highlight tracking, "Back to
+current line" and scroll lock all passed. Two real bugs surfaced, plus one
+latent one. All three were things the automated checks could not have caught,
+which is the point of §7.
+
+### 12.1 Dragging the progress bar did nothing (fixed)
+
+`onTrackPointerMove` called `paint(timeMs)` and **never touched
+`currentTime`** — it repainted the bar without seeking. `onTrackPointerDown`
+did seek, so a *click* on the bar worked and a *drag* silently sprang back to
+wherever the video still was. The user's words: "拖了他还是会在原来的位置继续放".
+
+Fix: one `commitSeek(timeMs)` used by the click path, the drag path and the ±5s
+buttons. Drag seeks are coalesced to at most one per animation frame (a
+pointermove fires far faster than the decoder can settle a seek, and flooding
+`currentTime` makes scrubbing stutter rather than improve), and the exact release
+position is flushed on pointerup.
+
+**Invariant worth keeping:** every path that moves the playhead goes through
+`commitSeek`. There is exactly one place that writes `video.currentTime`.
+
+### 12.2 The Browse button had never once opened a dialog (fixed)
+
+`POST /api/ingest/pick` returned `{path: null, cancelled: true}` in 0.8s and the
+UI ignored `cancelled` entirely — hence "点了之后没什么反应". Three separate
+defects stacked up:
+
+1. **The script died on an invalid property.** It set `$dialog.TopMost = $true`,
+   but `TopMost` is a `Form` member; `OpenFileDialog` has no such property.
+   With `$ErrorActionPreference = 'Stop'` the script aborted on that line, so
+   `ShowDialog()` was never reached. It failed 100% of the time, from the first
+   commit onwards.
+2. **A failure was reported as a cancellation.** The route discarded the exit
+   code and stderr, so "the dialog threw" and "the user pressed Cancel" produced
+   an identical response, and the UI only reacted to `path` or `error` — so the
+   most common outcome was total silence. The route now returns 500 with the
+   actual stderr text when the dialog could not be shown, and the UI shows a
+   neutral note when the dialog genuinely closed empty.
+3. **Diagnostics came back as mojibake.** Windows PowerShell writes to a
+   redirected stream in the OEM codepage, so the error text arrived as
+   `�ڴ˶������Ҳ������`. The script now sets
+   `[Console]::OutputEncoding = [System.Text.Encoding]::UTF8` first.
+
+A fourth attempt is worth recording because it *looked* right: replacing the
+invalid property with an invisible **minimised owner form**
+(`ShowDialog($owner)`) made the script exit cleanly in 5.5s with no dialog.
+Windows refuses to display a modal dialog owned by a minimised window. Calling
+`ShowDialog()` with no owner at all is what works — the process has no
+foreground window of its own, so Windows grants the dialog the foreground.
+
+**How this was verified without a human:** a working dialog *blocks*. The buggy
+version answered in 0.8s; the fix answers never (still waiting after 14s). That
+timing difference is the test, and it needs no one at the keyboard.
+
+**Lesson:** for a "nothing happened" report, check the silent branches first.
+Both bugs here were code paths that returned successfully while doing nothing.
+
+### 12.3 Seeking to 0 reported a stale position (fixed)
+
+`requestSync()` in `hooks/usePlaybackClock.ts` read
+`videoRef.current?.currentTime ? ... : timeMsRef.current`. Since `0` is falsy, a
+seek to the very beginning reported the previous position instead of zero. Now
+tests the element, not the number.
+
+### 12.4 Fixture audio is unusable for judging feel — open
+
+The user reports the speech sounds "不太连贯 / 人的声音怪怪的" even at 1x, and
+could not judge the loop behaviour because of it. That is expected: the fixture
+is **formant synthesis** (eSpeak NG), not a recording. It is fine for verifying
+timing and sync, useless for judging whether listening is pleasant.
+
+Raised as an M0 blocker for the "listen for 20 minutes without wanting to stop"
+criterion. The promising fix needs no download: drive the **Windows SAPI voices
+already on this machine** (`System.Speech.Synthesis.SpeechSynthesizer`) through
+the same spawn-a-PowerShell technique the pick route now proves works, keeping
+the same arithmetic so the subtitle still matches the audio exactly.
