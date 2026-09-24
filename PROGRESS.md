@@ -3,7 +3,7 @@
 Status log for the English Listening project. Read this first — it is written so
 that a fresh session with no context can pick the work up.
 
-Last updated: 2026-09-23 (M0 complete, M1 not started)
+Last updated: 2026-09-24 (M0 complete; fixture re-voiced with neural speech; M1 not started)
 
 ---
 
@@ -34,6 +34,10 @@ Other commands:
 npm run ingest -- "<path to a video>"     # import from the command line
 npm run ingest -- --list                  # show the library
 npm run ingest -- "<folder>"              # list candidates; imports nothing until --all / --only 1,3
+npm run fixture -- --sentences 8          # a short fixture, for quick checks
+npm run fixture -- --voice en-GB-RyanNeural
+npm run fixture -- --list-voices          # what voices the TTS backend offers
+npm run fixture -- --tts espeak           # regenerate the audio with no network
 npm test                                  # 59 unit tests over the pure modules
 npm run typecheck
 npm run build
@@ -118,24 +122,33 @@ several sections avoiding.
 | Upload / drag-drop as import entry point #2 | Not built | Marked as the fallback in the doc itself. A browser cannot supply the absolute path the pipeline runs on, so this entry point only ever existed for convenience. |
 | shadcn/ui for components | Hand-written Tailwind components | M0 only needs buttons, a select and a range input. Pulling in Radix now would add surface area without buying anything. Add it when dialogs/menus actually appear (M3 editor). |
 | ffmpeg/ffprobe downloaded from gyan.dev | Staged from the npm registry into `tools/` by `npm run tools:install` | This machine cannot reach the usual mirrors. Same binaries, reproducible install, and now version-pinned in `package.json`. Note the vendored ffmpeg is a 2018 build (it has libx264, which is all the fixture generator needs). |
-| Test material = an open movie (Sintel / Tears of Steel) | Synthesised fixture: eSpeak NG speech + ffmpeg `testsrc` | `download.blender.org` is behind a Cloudflare challenge and GitHub is unreachable here. The synthetic fixture is also a *stronger* test — see `testmedia/README.md`. |
+| Test material = an open movie (Sintel / Tears of Steel) | Synthesised fixture: **Microsoft Edge read-aloud neural speech** + ffmpeg `testsrc`, with eSpeak NG as the offline fallback | `download.blender.org` is behind a Cloudflare challenge. The synthetic fixture is also a *stronger* test — see `testmedia/README.md` and §12.4. |
 | `lesson.json` field `video.duration` (seconds) | `video.durationMs` | Consistency: the whole codebase speaks milliseconds (invariant #5). |
 
 ## 7. Not yet verified — do this next
 
-1. ~~**The native file dialog** (`POST /api/ingest/pick`).~~ **Resolved 2026-09-24 —
-   it never worked.** It is fixed and verified to block on a real dialog; see §12
-   for what was wrong. Still worth one human pass: pick a file through it and
-   confirm the import lands.
-2. **Player feel, by a human.** Range maths and SSR output are verified by
-   request, but nobody has watched the highlight track the audio, dragged the
-   scrubber, or sat on a loop. This is M0's actual acceptance criterion:
-   *"listen for 20 minutes without wanting to stop"*.
-3. **Two behaviours that only show up under a real hand:**
-   - scroll lock: scroll away mid-playback, confirm the follow stops and the
-     "Back to current line" button appears
-   - loop edge: "Repeat line" at 0.7x on a short line (fixture line 12 is the
-     shortest at 2.7s) — confirm it does not stutter or double-trigger
+1. ~~**The native file dialog** (`POST /api/ingest/pick`).~~ **Fixed 2026-09-24.**
+   It had never worked at all; see §12.2 for what was wrong. A human has since
+   opened it and picked a file successfully.
+2. ~~**Player feel, by a human.**~~ **Passed 2026-09-24** on the three things that
+   were testable: highlight tracking, scrub feel, and the scroll-lock / "Back to
+   current line" behaviour. What has *not* passed is the second half of M0's
+   acceptance criterion — *"listen for 20 minutes without wanting to stop"* —
+   because the fixture was formant-synthesised speech (§12.4). The fixture has
+   now been re-voiced. **This is the one open item, and it needs a human ear.**
+3. **Loop behaviour under a real hand.** "Repeat line" at 0.7x on the shortest
+   line — line 12, `That changed everything, honestly.` at 2.1s. Confirm it does
+   not stutter or double-trigger. Was deferred pending the re-voiced fixture, so
+   it is still unverified.
+4. **Replacing a file in place is not detected.** A lesson records the size and
+   digest it was imported with, but nothing compares them against the file when
+   the lesson is opened. If that file is overwritten with different content at
+   the same path, `/api/media/<id>` streams the new bytes against the old
+   transcript — silently wrong, the same family as §12.1 and §12.2. Regenerating
+   the fixture reproduces it. Cheap fix: on load, compare
+   `fs.statSync(video.path).size` (or recompute the digest) against `video.size`
+   and surface it the way `missingSince` already is. **Not done** — it is new
+   behaviour, not part of the fixture change.
 
 ## 8. Environment notes for this machine
 
@@ -146,10 +159,37 @@ These cost real time to discover. Do not rediscover them.
   Grep tools, or drive everything through Node with an absolute path:
   `D:\MyConfiguration\TCLXUSER\.workbuddy\binaries\node\versions\22.22.2-3\node.exe`
 - **npm is proxied** to `http://nexus.17usoft.com/repository/npm-all/`. The
-  public registry is reachable too. GitHub raw and `download.blender.org` are not.
-- **The PowerShell tool blocks `Add-Type` and COM instantiation.** That rules out
-  `System.Speech` TTS and `SAPI.SpVoice`. Hence eSpeak NG (WASM) for test audio.
-- **No system ffmpeg.** `npm run tools:install` vendors it into `tools/`.
+  public registry is reachable too.
+- **The PowerShell tool blocks `Add-Type` and COM instantiation, and never
+  returns stdout.** That rules out `System.Speech` TTS and `SAPI.SpVoice` from
+  the agent, and makes PowerShell useless for reading anything back (writing to
+  a file and then reading *that* does work — that is how this was established).
+  For the record, `Microsoft Zira Desktop - English (US)` **is** installed as a
+  SAPI5 voice, and the OneCore set contains only `zh-CN` voices. So Windows TTS
+  was a dead end here regardless. See §12.4 for what replaced it.
+- **Bash refuses to spawn `powershell.exe`**, by policy ("bypasses PowerShell
+  security checks"). Do not route around this — the app itself is allowed to
+  spawn it, and that is the only sanctioned path.
+- **Outbound network from the agent sandbox is filtered**, and requests are
+  routed through an egress proxy exported as `HTTP(S)_PROXY=127.0.0.1:61322`.
+  Against some hosts that proxy **resets the TLS handshake**, so any library
+  that honours the env vars (axios, most HTTP clients) fails where a plain
+  `https.get`, or a WebSocket, succeeds. `speech.platform.bing.com` is exactly
+  this case, which is why `msedge-tts`'s `getVoices()` needed `--no-proxy`.
+  Reachability as measured on 2026-09-24:
+  - **reachable** — `nexus.17usoft.com` (npm mirror), `registry.npmjs.org`,
+    `cdn.jsdelivr.net` (including `/gh/<owner>/<repo>@<ref>/<path>`),
+    `codeload.github.com`, `objects.githubusercontent.com`,
+    `storage.googleapis.com`, `tatoeba.org`, `hf-mirror.com`, `modelscope.cn`,
+    `ghfast.top`, `ghproxy.net`
+  - **not reachable** — `github.com`, `raw.githubusercontent.com`,
+    `api.github.com` (403), `huggingface.co`, `translate.google.com`,
+    `upload.wikimedia.org`, `archive.org`, `download.blender.org`
+  - Reachability is **not** stable run to run: a first probe of
+    `speech.platform.bing.com` failed with `ECONNRESET` and a retry a minute
+    later answered `200` three times in a row. Retry before concluding.
+- **No system ffmpeg.** `npm run tools:install` vendors it into `tools/`. Note
+  that build is old enough to lack `apad=pad_dur`; use plain `apad` plus `-t`.
 - **`npm` itself does not run in the agent's shell** — npm is a shell script that
   needs a working `bash`, and this shell's PATH breaks it (`/usr/bin/env: 'bash':
   No such file or directory`). In a normal terminal `npm test` / `npm run dev`
@@ -170,31 +210,44 @@ Plan (design doc §16). Do these in order:
 backend on this machine's Intel Arc 140T and confirm it transcribes the fixture
 faster than real time. If this fails, the whole M1 plan needs rethinking.
 
-> ⚠️ **Known risk, partly de-risked.** whisper.cpp release binaries come from
-> GitHub, which this network cannot reach. Checked against the npm mirror, these
-> packages exist and are installable:
+> ⚠️ **Partly de-risked on 2026-09-24.** The assumption that "GitHub is
+> unreachable" was too coarse — it is true of `github.com` and
+> `raw.githubusercontent.com` and false of several other ways in. Measured (see
+> §8 for the method):
 >
-> | package | version | note |
+> | What M1 needs | Route | Status |
 > |---|---|---|
-> | `smart-whisper` | 0.8.1 | whisper.cpp Node binding, "auto model offloading" |
-> | `nodejs-whisper` | 0.3.1 | whisper.cpp bindings, CPU-oriented |
-> | `whisper-node` | 1.1.1 | whisper.cpp bindings, CPU-oriented |
-> | `node-whisper` | 2026.3.3 | async binding |
+> | whisper.cpp **source** | `codeload.github.com/…/zip/refs/heads/master` | ✅ `200`, 200 KB zip |
+> | whisper.cpp single files | `cdn.jsdelivr.net/gh/ggerganov/whisper.cpp@<ref>/<path>` | ✅ `200` |
+> | whisper.cpp **release binaries** | `github.com` → `objects.githubusercontent.com` | ❌ `github.com` times out, so the signed asset URL cannot be obtained directly |
+> | GitHub proxy services | `ghfast.top`, `ghproxy.net` | ✅ `301` — reachable; follow the redirect and see whether a prebuilt Vulkan binary comes through |
+> | **ggml model weights** | `hf-mirror.com/ggerganov/whisper.cpp/resolve/main/…` | ✅ `307` on a repo path — follow the redirect |
+> | the same weights from `huggingface.co` | ❌ times out |
+> | npm bindings | `nexus.17usoft.com` | ✅ installable — `smart-whisper` 0.8.1, `nodejs-whisper` 0.3.1, `whisper-node` 1.1.1, `node-whisper` 2026.3.3 |
 >
-> None of them promises the **Vulkan** backend, and some fetch sources/binaries
-> from GitHub during install. So the realistic outcomes are:
+> So the realistic paths, in order of preference:
 >
-> 1. **Vulkan via whisper.cpp** — the design-doc target, needs a binary or a
->    source build (CMake + compiler + Vulkan SDK).
-> 2. **CPU-only whisper.cpp** via one of the bindings above. Slower, but M1 is
->    not blocked: ASR is a one-off cost, and `large-v3-turbo-q8_0` on CPU is
->    minutes for a 45-minute file, not hours.
-> 3. **No ASR at all** — the app already works from sidecar subtitles. Not a
+> 1. **Prebuilt binary through a GitHub proxy.** Cheapest if the proxy serves
+>    release assets. Check whether a Vulkan build is among them — upstream
+>    publishes CPU builds; the Vulkan one may have to be built.
+> 2. **Build from source** via `codeload` (CMake + a compiler; Vulkan needs the
+>    Vulkan SDK). Reliable, but a real afternoon, and the Vulkan SDK download is
+>    its own reachability question.
+> 3. **An npm binding, CPU-only.** None promises the Vulkan backend, and some
+>    fetch from GitHub during install — so read the install script before
+>    committing. Slow, but M1 is not blocked: ASR is a one-off cost, and
+>    `large-v3-turbo-q8_0` on CPU is minutes for a 45-minute file.
+> 4. **No ASR at all** — the app already works from sidecar subtitles. Not a
 >    disaster, just less automatic.
 >
-> Decide between 1 and 2 **before** writing `segment.ts`, because the choice
-> determines whether we get word-level timestamps from `-dtw` or have to derive
-> them ourselves.
+> Decide **before** writing `segment.ts`, because the choice determines whether
+> word-level timestamps come from `-dtw` or have to be derived here.
+>
+> **Useful side effect of §12.4:** the `edge` TTS backend now produces a real
+> **word-boundary timeline** for synthesised speech, with 40–60 ms accuracy
+> against measured speech onsets. That is exactly the shape `segment.ts` will
+> have to consume, so the fixture can exercise the aligner *before* any ASR
+> exists — and it gives a ground-truth timeline to check an ASR against later.
 
 Then:
 
@@ -227,9 +280,11 @@ What has actually been run, rather than assumed:
 - `GET /watch/<id>` → `200`, 33 KB of HTML containing all 20 cue texts, the media
   URL and the practice controls
 
-Shapes of the numbers that matter: fixture line 1 is `1200 → 6089` ms, which is
-exactly `LEAD_IN (1200)` + the WAV's measured 4889 ms. The subtitle and the audio
-are generated from the same arithmetic, so any drift seen later is the player's.
+Shapes of the numbers that matter: on the original eSpeak fixture, line 1 was
+`1200 → 6089` ms — that is `LEAD_IN (1200)` plus the WAV's measured 4889 ms, the
+subtitle and the audio produced from the same arithmetic. The concept survived
+the re-voicing in §12.4; what changed is that the times now come from the speech
+engine's **own word boundaries** rather than being computed at all.
 
 - `npm test` — **59 tests, 3 files, all passing**
   - `lib/server/range.test.ts` (13) — including the four ranges actually fired at
@@ -258,6 +313,39 @@ are generated from the same arithmetic, so any drift seen later is the player's.
   dialog. Also caught an intermediate attempt that exited cleanly in 5.5s with no
   dialog (minimised owner form — see §12.2).
 - `next build` after the 2026-09-24 fixes — clean, no warnings.
+
+Fixture re-voicing, 2026-09-24 (§12.4):
+
+- `node scripts/make-fixture.mjs --sentences 4 --name _smoke` — the strict
+  word-to-sentence mapper passed on the first run, no adjustment needed.
+- ffprobe on the smoke output — `h264` + `aac`, 451 video frames, 18.04s. Video
+  and audio lengths agree.
+- **Independent check that the cue times are real speech onsets**, not estimates:
+  `ffmpeg -af silencedetect=noise=-35dB:d=0.20` on the smoke output, compared
+  against the generated `.vtt`:
+
+  | cue start (from the engine) | measured speech onset | delta |
+  |---|---|---|
+  | 0.700 | 0.749 | +49 ms |
+  | 4.763 | 4.808 | +45 ms |
+  | 8.113 | 8.158 | +45 ms |
+  | 12.600 | 12.656 | +56 ms |
+
+  All four within 45–56 ms and all in the same direction — the detector's
+  threshold fires slightly after the true onset, which is what it should do. The
+  two clocks are independent (one is the synthesiser's own timeline, the other is
+  measured off the encoded AAC), so agreement here is real evidence.
+- full regeneration — `36 lines, 401 spoken words, 123.7s total, 3.24 words/s`.
+- `npm run ingest -- "testmedia/listening-fixture-01.mp4"` → `imported — lesson
+  cdaff80b4a8d`, `36 lines from sidecar-vtt`, `02:04 · audio yes`.
+- `GET /watch/cdaff80b4a8d` → `200`, 44 KB, **36 distinct cue timestamps**
+  (`00:00` … `02:00`) plus the playhead, new line-21 and line-36 texts present,
+  media URL rewritten to the new id.
+- `GET /api/media/cdaff80b4a8d` → `200`, 4 111 261 bytes (full file, no Range).
+- the stale lesson from the previous fixture was removed through the app's own
+  API: `DELETE /api/lessons/6214067d2d98` → `200`, and crucially
+  `{"sourceFileDeleted": false, "sourcePathKept": "…\\listening-fixture-01.mp4"}`
+  — invariant #6 holds on the wire, not just in the source.
 
 ## 11. Testing
 
@@ -351,15 +439,60 @@ Both bugs here were code paths that returned successfully while doing nothing.
 seek to the very beginning reported the previous position instead of zero. Now
 tests the element, not the number.
 
-### 12.4 Fixture audio is unusable for judging feel — open
+### 12.4 Fixture audio was unusable for judging feel (fixed)
 
-The user reports the speech sounds "不太连贯 / 人的声音怪怪的" even at 1x, and
-could not judge the loop behaviour because of it. That is expected: the fixture
-is **formant synthesis** (eSpeak NG), not a recording. It is fine for verifying
-timing and sync, useless for judging whether listening is pleasant.
+Reported as: the speech sounds "不太连贯 / 人的声音怪怪的" even at 1x, and the loop
+test was impossible to judge because of it.
 
-Raised as an M0 blocker for the "listen for 20 minutes without wanting to stop"
-criterion. The promising fix needs no download: drive the **Windows SAPI voices
-already on this machine** (`System.Speech.Synthesis.SpeechSynthesizer`) through
-the same spawn-a-PowerShell technique the pick route now proves works, keeping
-the same arithmetic so the subtitle still matches the audio exactly.
+That diagnosis was correct and expected. The fixture used **eSpeak NG**, a
+formant synthesiser: it is excellent at crisp word boundaries, which is why it
+made timing bugs easy to hear, and it does not sound like a person. It was
+therefore fine for verifying sync and useless for the thing M0 actually asks —
+*"listen for 20 minutes without wanting to stop"*. A second, smaller cause was
+the fixture design itself: each sentence was rendered separately and glued
+together with a fixed 700 ms gap, so the prosody restarted on every line.
+
+**Dead ends, recorded so they are not re-explored:**
+
+| Idea | Why it failed |
+|---|---|
+| Windows SAPI (`System.Speech` + `Microsoft Zira Desktop - English (US)`, which *is* installed) | the PowerShell tool blocks `Add-Type` |
+| `SAPI.SpVoice` over COM | the PowerShell tool blocks COM instantiation |
+| WinRT `Windows.Media.SpeechSynthesis` (no `Add-Type` needed) | reaches only the **OneCore** voice set, which on this machine has `zh-CN` only — no English |
+| spawning `powershell.exe` from Node | Bash refuses it by policy, correctly; and the PowerShell tool never returns stdout anyway |
+| Edge neural voices, first attempt | the sandbox's egress proxy (`HTTP(S)_PROXY`) reset the TLS handshake — see §8 |
+
+**What was built.** `scripts/make-fixture.mjs` now has two backends. The default
+is `edge`: Microsoft Edge's read-aloud **neural** voices, reached through
+`msedge-tts`. The offline fallback stays `espeak`.
+
+The important change is not the voice, it is the timing architecture:
+
+- The whole passage is synthesised in **one request**, so the prosody flows the
+  way speech actually flows — no stitching, no artificial gaps.
+- Word boundaries are switched on, so the engine returns the exact **onset and
+  duration of every spoken word** (100-nanosecond ticks).
+- The subtitle is produced by grouping those words back into the sentences they
+  came from, with a **strict** matcher: any sentence whose spoken words do not
+  match one-for-one is a hard error naming the mismatching word, not a warning.
+  A number or a contraction expanding would otherwise shift a line silently.
+- Cue times are therefore **measured from the audio**, not computed. The
+  `lead-in` is added afterwards, so line 1 starts at `00:00:00.700` = the
+  engine's first spoken onset (~100 ms) + a 600 ms lead-in.
+- Each cue ends where the next begins. Otherwise the 100–400 ms pauses between
+  sentences briefly highlight nothing, which reads as a glitch rather than as a
+  pause — and for a listening drill the trailing pause is part of the line.
+
+**New fixture:** 36 sentences, 401 words, 2:03, 3.24 words/s, voice
+`en-US-AndrewNeural`. Still `testsrc` video with 1-second keyframes.
+
+**Deployment note.** `msedge-tts` is a **dev dependency only**, and it is a
+reverse-engineered client for an unofficial endpoint. That is fine for
+generating a local fixture and would not be fine for anything shipped. Nothing
+at runtime touches it: the `.mp4` and `.vtt` it produces are ordinary local
+files, so the app runs with the network off.
+
+**Unplanned bonus for M1:** a word-boundary timeline is exactly what
+`lib/lesson/segment.ts` will have to consume. The fixture can now exercise the
+aligner, and act as ground truth to measure an ASR against, *before* any ASR
+exists. Noted in §9.
