@@ -46,14 +46,23 @@ export function findNextCueIndex(cues: readonly Cue[], timeMs: number): number {
   return candidate < cues.length ? candidate : cues.length - 1
 }
 
-/** Index of the previous cue — used by "jump to previous line". */
+/**
+ * Index of the previous cue — used by "jump to previous line".
+ *
+ * Strictly the line before the one the playhead is in, so it mirrors
+ * findNextCueIndex: ← always moves up a line, → always moves down one.
+ *
+ * This used to restart the current line when the playhead was more than 400ms
+ * into it, borrowing the media-player convention. That made the key depend on
+ * playback position — mid-line it never went back at all, which reads as
+ * broken, and it made the two arrows asymmetric. Replaying a line is a
+ * different action with its own affordance (click it in the transcript, or set
+ * Repeat to Line).
+ */
 export function findPreviousCueIndex(cues: readonly Cue[], timeMs: number): number {
-  // Matches findNextCueIndex: an empty transcript has no line to land on, so
-  // callers can uniformly test for a negative index.
   if (cues.length === 0) return -1
   const index = findCueIndexAtOrBefore(cues, timeMs)
+  // Clamped at the first line, including when the playhead is before it.
   if (index <= 0) return 0
-  // If we are more than 400ms into the current line, restart it instead of
-  // stepping back one — this matches how people expect "back" to behave.
-  return timeMs - cues[index].start > 400 ? index : index - 1
+  return index - 1
 }

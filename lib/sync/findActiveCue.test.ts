@@ -96,23 +96,45 @@ describe('findNextCueIndex', () => {
 })
 
 describe('findPreviousCueIndex', () => {
-  it('restarts the current line when we are already into it', () => {
-    // More than 400ms in, "back" means "replay this line", not "go up one".
-    expect(findPreviousCueIndex(cues, 3000)).toBe(1)
-    expect(findPreviousCueIndex(cues, 6500)).toBe(2)
+  it('goes to the line before the one the playhead is in', () => {
+    expect(findPreviousCueIndex(cues, 2600)).toBe(0)
+    expect(findPreviousCueIndex(cues, 6500)).toBe(1)
   })
 
-  it('steps back a line when the current one has barely started', () => {
-    expect(findPreviousCueIndex(cues, 2500)).toBe(0)
-    expect(findPreviousCueIndex(cues, 2700)).toBe(0)
+  it('never restarts the current line, however far into it we are', () => {
+    // Regression: past 400ms into a line this used to return the current index,
+    // so mid-line "previous" appeared to do nothing at all.
+    expect(findPreviousCueIndex(cues, 2999)).toBe(0)
+    expect(findPreviousCueIndex(cues, 6999)).toBe(1)
+    expect(findPreviousCueIndex(cues, 1500)).toBe(0)
   })
 
   it('never goes below the first line', () => {
     expect(findPreviousCueIndex(cues, 0)).toBe(0)
-    expect(findPreviousCueIndex(cues, 1500)).toBe(0)
+    expect(findPreviousCueIndex(cues, 1000)).toBe(0)
+    expect(findPreviousCueIndex(cues, 1999)).toBe(0)
   })
 
   it('returns -1 only for an empty transcript', () => {
     expect(findPreviousCueIndex([], 1500)).toBe(-1)
+  })
+})
+
+describe('prev/next are symmetric', () => {
+  // The two arrows have to be each other's inverse at line granularity, or one
+  // of them feels broken. The player lands on start + 5ms, so that is the time
+  // we step back from.
+  it('next then previous returns to the line we left', () => {
+    const from = 2600
+    const next = findNextCueIndex(cues, from)
+    expect(next).toBe(2)
+    expect(findPreviousCueIndex(cues, cues[next].start + 5)).toBe(1)
+  })
+
+  it('both directions move exactly one line from every line start', () => {
+    for (let i = 1; i < cues.length; i += 1) {
+      expect(findPreviousCueIndex(cues, cues[i].start + 5)).toBe(i - 1)
+      expect(findNextCueIndex(cues, cues[i - 1].start + 5)).toBe(i)
+    }
   })
 })

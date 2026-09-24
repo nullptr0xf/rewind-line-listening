@@ -45,7 +45,8 @@ npm run fixture -- --sentences 8          # a short fixture, for quick checks
 npm run fixture -- --voice en-GB-RyanNeural
 npm run fixture -- --list-voices          # what voices the TTS backend offers
 npm run fixture -- --tts espeak           # regenerate the audio with no network
-npm test                                  # 155 unit tests over the pure modules
+npm test                                  # 157 unit tests over the pure modules
+npm run verify:step                       # do ←/→ really walk the transcript one line at a time?
 npm run typecheck
 npm run build
 ```
@@ -83,7 +84,7 @@ from the LAN.
 | Transcription API: start / list / SSE progress / cancel | implemented 2026-09-24 — see §16.4 |
 | `npm run transcribe` — the same runner with no UI in the loop | implemented 2026-09-24 — see §16.3 |
 | UI: a live progress strip, in the library and on the player | implemented 2026-09-24, **needs a human eye** — see §16.5 |
-| Unit tests over the pure modules | 155 passing — see §11 |
+| Unit tests over the pure modules | 157 passing — see §11 |
 
 ### Deliberately NOT implemented yet
 
@@ -352,8 +353,9 @@ engine's **own word boundaries** rather than being computed at all.
   - `lib/lesson/vtt.test.ts` (28) — BOM + CRLF, `NOTE`/`STYLE` blocks, cue ids,
     inline tags, entities, cue settings, unparsable timestamps, zero-length cues,
     overlap trimming, and `cues → VTT → cues` / `cues → SRT → cues` round trips
-  - `lib/sync/findActiveCue.test.ts` (18) — the highlight and prev/next line
-    lookups, including the end-is-exclusive boundary and the 400ms restart rule
+  - `lib/sync/findActiveCue.test.ts` (20) — the highlight and prev/next line
+    lookups, including the end-is-exclusive boundary, the no-restart rule and
+    prev/next symmetry (§17)
 - Browser check via headless Chrome against the live dev server: `/watch/<id>`
   renders the full left/right split, all 20 transcript lines with timestamps
   `00:01 → 01:36`, and every practice/transport control, with no console errors.
@@ -436,7 +438,13 @@ expensive to debug through the UI. That is `range.ts`, `vtt.ts`,
 `lib/server/asr.ts` (toolchain resolution and the two progress parsers) and
 `lib/server/transcribe.ts` (the job state machine, driven by injected fake steps
 so the risky part is testable without spawning anything) in §16. The count is
-**155 tests**.
+**157 tests**.
+
+Some behaviours need more than a unit test, and get a named entry point instead
+(`npm run bench:asr`, `npm run inspect:timeline`, `npm run verify:step` — §15.10,
+§17). The test for choosing one over the other: does the bug depend on data the
+unit test does not have? A **position-dependent** bug cannot be caught by three
+synthetic cues; it needs real line lengths, which only the fixture provides.
 
 The one caveat learned the hard way (§15.10): a green suite says the code does
 what the *tests* were written to check, and the tests were written from the same
@@ -1246,7 +1254,7 @@ Two details that would otherwise be bugs:
 
 ### 16.7 Verification log additions
 
-- `npm test` — **155 passing** (was 107); `npm run typecheck` clean
+- `npm test` — **155 passing** (was 107; 157 after §17); `npm run typecheck` clean
 - **CLI, end to end** on the 124 s fixture (a re-muxed copy with no sibling
   subtitle), `base.en-q8_0` + VAD: **10.64 s wall** including Node startup, and
   **38 cues / 401 words** — the same 38 cues `bench:asr` reports, which is the
@@ -1288,5 +1296,127 @@ Two details that would otherwise be bugs:
 - **`.ass` is still unsupported**, and image-based subtitle codecs (PGS/VobSub)
   are now called out explicitly in the ingest warning, since the export command we
   recommend only works for text-based ones.
+
+## 17. "Previous line" did not go to the previous line — 2026-09-24
+
+Reported by the user after using the arrows: *"上一句其实是跳到当前这句开头，下一句是正常的."*
+Exactly right, and the code said so out loud:
+
+```ts
+// If we are more than 400ms into the current line, restart it instead of
+// stepping back one — this matches how people expect "back" to behave.
+return timeMs - cues[index].start > 400 ? index : index - 1
+```
+
+### Why it was written that way, and why it was still wrong
+
+The 400 ms rule is the media-player convention: pressing "back" mid-track
+restarts the track. It makes sense where a track is minutes long and restarting
+is a cheap way to "hear that again".
+
+It is the wrong trade here, for three reasons:
+
+1. **It is position-dependent, so the key looks broken.** Mid-line it does
+   nothing. The helper is only reached when the playhead is already in a line
+   and, for lines longer than 400 ms, every press from the first 400 ms onward
+   returned the current index. Measured on the fixture: **131 of 271** sampled
+   in-line positions behaved that way — 48%, so this was the common case, not an
+   edge case.
+2. **It made the two arrows asymmetric.** `→` always advanced; `←` sometimes
+   stood still. Two adjacent buttons that behave by different rules read as a
+   bug even when each is defensible alone.
+3. **Replaying a line already has two affordances**: clicking the line in the
+   transcript (`handleSelect` seeks to its start), and `Repeat → Line`, which
+   loops it until you stop. The transport buttons do not need to do it too.
+
+### The fix
+
+`findPreviousCueIndex` is now strictly the line before the one the playhead is
+in, clamped at the first — a mirror of `findNextCueIndex`:
+
+```ts
+if (index <= 0) return 0
+return index - 1
+```
+
+The **test that pinned the old behaviour had to be deleted**, not adjusted. It
+read `it('restarts the current line when we are already into it')` and asserted
+`findPreviousCueIndex(cues, 3000) === 1` — the bug, written down as a
+requirement. This is the second time in this project that a test memorialised
+the defect (§15.10 was the first, in `classifyEnding`). Two occurrences is a
+pattern: **when a test asserts behaviour nobody can point at in the product, the
+test is the suspect, not the code.**
+
+Replaced with the two properties that actually matter:
+- *never restarts the current line, however far into it we are* — offset 2999
+  and 6999 on the test cues, i.e. deliberately past the old threshold
+- *prev and next are each other's inverse at line granularity* — from every line
+  start, `←` gives `i-1` and `→` gives `i+1`, and `→` then `←` returns to the
+  line we left
+
+### `npm run verify:step`
+
+The unit test has three synthetic 1-second cues. A **position-dependent** bug
+needs realistic line lengths, so the property that failed is verified against
+the real fixture instead, as a named entry point rather than a throwaway script
+(the convention from §15.10): 36 lines / 123.3 s, sweeping **8 depths inside
+every line** — `0, 1, 100, 400, 401, 1000, 3000, span-1`, which straddles the
+old 400 ms boundary on purpose.
+
+It also re-runs the identical sweep against the old rule as a **control**:
+
+```
+fixture: 36 lines, 123.3s
+  checked 271 in-line offsets
+ALL PASS
+control: the old rule gets 131/271 of the same offsets wrong
+```
+
+A check that passes for both the broken and the fixed implementation would be
+worthless; the control is what makes the green run mean anything.
+
+**The harness was wrong first.** An earlier version of the sweep used a fixed
+`+3000 ms` offset for every line and reported nine failures. The fixture's cues
+are back-to-back — each `end` is the next `start` — so `+3000 ms` regularly
+lands two lines further on and the expectation, not the function, was wrong.
+Third time in this project that the measuring instrument was the defect (§15.10's
+WER scorer, §16's missing `-pp`). **When the numbers look wrong, suspect the
+instrument before the code.**
+
+### Also in this pass
+
+- **The ±5 s buttons are gone** and `←`/`→` step lines. Four transport buttons
+  were only two intents: for 2–4 s lines "back 5 s" lands near the previous line
+  and "forward 5 s" near the next. The line buttons are the better pair — they
+  align to cue starts, reset the repeat counter, scroll the transcript and honour
+  *Play on click*. Anything finer is the scrub bar or clicking a transcript line.
+  The arrow handler ignores events from form controls (loop count, speed, volume
+  all own the arrows), passes modifiers through, and respects `defaultPrevented`.
+- **`npm run tools:install` defaulted to the wrong model.** It staged
+  `large-v3-turbo-q8_0` (834 MB) while `lib/server/asr.ts` asks for
+  `base.en-q8_0` (78 MB) — so a new user downloaded a model the app would not
+  pick, and one §15.10 had already rejected as 7× slower for no accuracy gain.
+  The defaults now agree. Note the shape of this: `asr.ts` was built without a
+  model list *specifically* to avoid drifting from the installer, and the drift
+  happened in the installer instead. **Anti-drift has to cover every copy of the
+  fact, not just the file you were worried about.**
+- **README caught up with M1**: transcription (UI + every `npm run transcribe`
+  flag, checked against the CLI source), what `tools:install` really stages and
+  through which proxies, model sizes and the English-only caveat, a keyboard map.
+  The *"Not built yet: speech recognition"* line was stale. Also clarified what
+  is and is not in git: `bin/` (both CLI entry points) **is** tracked; `tools/`
+  is not, by design — the binaries are large and reproducible with one command.
+
+### Verification log additions
+
+- `npm test` — **157 passing** (was 155; `findActiveCue.test.ts` 18 → 20)
+- `npm run typecheck` — clean
+- `npm run verify:step` — ALL PASS, with the control at 131/271 as above
+- `npm run tools:install -- --list` — smoke-tested after the default change
+- SSR HTML of `/watch/<id>` re-fetched: *Back 5 seconds* / *Forward 5 seconds*
+  absent, *Previous line (←)* / *Next line (→)* present
+- **Not verified by a human:** the arrow keys themselves. They are client-side
+  and SSR HTML cannot show them; the evidence is typecheck plus the pure-function
+  sweep. Worth a keystroke the next time the player is open.
 
 
