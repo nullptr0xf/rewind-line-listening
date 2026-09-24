@@ -38,16 +38,25 @@ export function ImportPanel({ onImported }: ImportPanelProps) {
   const [path, setPath] = useState('')
   const [busy, setBusy] = useState<null | 'browsing' | 'importing'>(null)
   const [error, setError] = useState<string | null>(null)
+  const [dialogClosedEmpty, setDialogClosedEmpty] = useState(false)
   const [report, setReport] = useState<IngestReport | null>(null)
 
   const browse = useCallback(async () => {
     setBusy('browsing')
     setError(null)
+    setDialogClosedEmpty(false)
     try {
       const response = await fetch('/api/ingest/pick', { method: 'POST' })
-      const data = (await response.json()) as { path: string | null; error?: string }
+      const data = (await response.json()) as {
+        path: string | null
+        cancelled?: boolean
+        error?: string
+      }
       if (data.error) setError(data.error)
       else if (data.path) setPath(data.path)
+      // Never fall through silently. "Clicked Browse and nothing happened" was
+      // this branch doing nothing at all.
+      else setDialogClosedEmpty(true)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not open the file dialog.')
     } finally {
@@ -129,6 +138,13 @@ export function ImportPanel({ onImported }: ImportPanelProps) {
       {error ? (
         <p className="mt-3 rounded-md border border-ink-700 bg-ink-850 px-3 py-2 text-[11px] leading-relaxed text-red-300">
           {error}
+        </p>
+      ) : null}
+
+      {dialogClosedEmpty ? (
+        <p className="mt-3 rounded-md border border-ink-700 bg-ink-850 px-3 py-2 text-[11px] leading-relaxed text-ink-400">
+          The file dialog closed without a selection. Nothing was imported. If no dialog appeared
+          at all, paste the path into the field above instead.
         </p>
       ) : null}
 

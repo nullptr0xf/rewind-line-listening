@@ -24,7 +24,9 @@ const FILTER_LABEL =
 
 function runCommand(command: string, args: string[]): Promise<{ stdout: string; stderr: string; code: number | null }> {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { windowsHide: false, stdio: ['ignore', 'pipe', 'pipe'] })
+    // windowsHide keeps a console window from flashing up. The dialog itself is
+    // a separate GUI window, so it still appears.
+    const child = spawn(command, args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
 
     let stdout = ''
     let stderr = ''
@@ -55,6 +57,11 @@ function runCommand(command: string, args: string[]): Promise<{ stdout: string; 
 
 const WINDOWS_SCRIPT = `
 $ErrorActionPreference = 'Stop'
+# Windows PowerShell writes to a redirected stream in the OEM codepage, which
+# turns any error text we capture into mojibake. Force UTF-8 before anything is
+# written so diagnostics stay readable.
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
 Add-Type -AssemblyName System.Windows.Forms | Out-Null
 $dialog = New-Object System.Windows.Forms.OpenFileDialog
 $dialog.Title = 'Import a video or audio file'
@@ -63,56 +70,118 @@ $dialog.CheckFileExists = $true
 $dialog.CheckPathExists = $true
 $dialog.Multiselect = $false
 $dialog.RestoreDirectory = $true
-$dialog.TopMost = $true
+# OpenFileDialog has NO TopMost property - that belongs to Form. Assigning it
+# threw PropertyAssignmentException, and with ErrorActionPreference=Stop the
+# script died on that line before the dialog could ever be shown. That is why
+# clicking Browse appeared to do nothing at all.
+#
+# Deliberately NO owner form either: a modal dialog owned by a minimised Form is
+# refused by Windows and ShowDialog returns immediately, so "owner + Minimized"
+# silently reproduced the same no-op. Called with no owner, the process has no
+# foreground window of its own and Windows grants the dialog the foreground, so
+# it comes up in front of the browser.
 if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
   Write-Output $dialog.FileName
 }
 `
 
-async function pickOnWindows(): Promise<string | null> {
-  const { stdout } = await runCommand('powershell.exe', [
+/**
+ * `diagnostic` is set only when the dialog could not be shown at all.
+ *
+ * "The user cancelled" and "the dialog silently failed to appear" both produce
+ * no path, and collapsing them into one `cancelled: true` response is how this
+ * endpoint came to look like a dead button: the exit code and stderr were being
+ * discarded, so a broken dialog was reported as a polite cancellation.
+ */
+type PickOutcome = { path: string | null; diagnostic: string | null }
+
+function summarise(raw: string): string {
+  const oneLine = raw.replace(/\s+/g, ' ').trim()
+  return oneLine.length > 400 ? `${oneLine.slice(0, 400)}…` : oneLine
+}
+
+async function pickOnWindows(): Promise<PickOutcome> {
+  const { stdout, stderr, code } = await runCommand('powershell.exe', [
     '-NoProfile',
     '-STA',
     '-Command',
     WINDOWS_SCRIPT,
   ])
   const picked = stdout.trim().split(/\r?\n/).pop()?.trim() ?? ''
-  return picked.length > 0 ? picked : null
+  if (picked.length > 0) return { path: picked, diagnostic: null }
+
+  if (code !== 0 || stderr.trim().length > 0) {
+    return {
+      path: null,
+      diagnostic:
+        summarise(stderr) || `The file dialog process exited with code ${String(code)}.`,
+    }
+  }
+  return { path: null, diagnostic: null }
 }
 
-async function pickOnMac(): Promise<string | null> {
+async function pickOnMac(): Promise<PickOutcome> {
   const script = 'POSIX path of (choose file with prompt "Import a video or audio file")'
-  const { stdout } = await runCommand('osascript', ['-e', script])
+  const { stdout, stderr, code } = await runCommand('osascript', ['-e', script])
   const picked = stdout.trim()
-  return picked.length > 0 ? picked : null
+  if (picked.length > 0) return { path: picked, diagnostic: null }
+  // osascript reports a user cancel as a non-zero exit with "User canceled" on
+  // stderr, so only treat other failures as diagnostics.
+  if (code !== 0 && !/user cancel/i.test(stderr)) {
+    return { path: null, diagnostic: summarise(stderr) || `osascript exited with ${String(code)}.` }
+  }
+  return { path: null, diagnostic: null }
 }
 
-async function pickOnLinux(): Promise<string | null> {
-  try {
-    const { stdout } = await runCommand('zenity', [
-      '--file-selection',
-      '--title=Import a video or audio file',
-    ])
-    return stdout.trim() || null
-  } catch {
-    const { stdout } = await runCommand('kdialog', [
-      '--getopenfilename',
-      '.',
-      'Media files (*.mp4 *.mkv *.webm *.mov *.mp3 *.m4a *.wav *.flac)',
-    ])
-    return stdout.trim() || null
+async function pickOnLinux(): Promise<PickOutcome> {
+  const failures: string[] = []
+  for (const [command, args] of [
+    ['zenity', ['--file-selection', '--title=Import a video or audio file']],
+    [
+      'kdialog',
+      [
+        '--getopenfilename',
+        '.',
+        'Media files (*.mp4 *.mkv *.webm *.mov *.mp3 *.m4a *.wav *.flac)',
+      ],
+    ],
+  ] as const) {
+    try {
+      const { stdout, stderr, code } = await runCommand(command, [...args])
+      if (stdout.trim()) return { path: stdout.trim(), diagnostic: null }
+      if (code !== 0) failures.push(`${command}: ${summarise(stderr) || `exit ${String(code)}`}`)
+      else return { path: null, diagnostic: null } // clean exit, no selection = cancel
+    } catch (error) {
+      failures.push(`${command}: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+  return {
+    path: null,
+    diagnostic: failures.length > 0 ? failures.join(' | ') : null,
   }
 }
 
 export async function POST() {
   try {
-    let picked: string | null = null
+    let outcome: PickOutcome
 
-    if (process.platform === 'win32') picked = await pickOnWindows()
-    else if (process.platform === 'darwin') picked = await pickOnMac()
-    else picked = await pickOnLinux()
+    if (process.platform === 'win32') outcome = await pickOnWindows()
+    else if (process.platform === 'darwin') outcome = await pickOnMac()
+    else outcome = await pickOnLinux()
 
-    return NextResponse.json({ path: picked, cancelled: picked === null })
+    if (outcome.diagnostic) {
+      console.error('[api/ingest/pick] dialog failed', outcome.diagnostic)
+      return NextResponse.json(
+        {
+          path: null,
+          cancelled: false,
+          error: `Could not open the system file dialog. ${outcome.diagnostic} — type or paste the path instead.`,
+        },
+        { status: 500 },
+      )
+    }
+
+    return NextResponse.json({ path: outcome.path, cancelled: outcome.path === null })
   } catch (error) {
     console.error('[api/ingest/pick] failed', error)
     return NextResponse.json(
