@@ -46,7 +46,14 @@ const MODELS = {
   'medium.en-q5_0': { file: 'ggml-medium.en-q5_0.bin', dtw: 'medium.en', minBytes: 400e6 },
   'base.en-q8_0': { file: 'ggml-base.en-q8_0.bin', dtw: 'base.en', minBytes: 70e6 },
 }
-const DEFAULT_MODEL = 'large-v3-turbo-q8_0'
+/**
+ * Must match lib/server/asr.ts DEFAULT_MODEL_NAME — that is what the app asks
+ * for by default, and a model the app will not pick is 800 MB of dead weight.
+ * Measured on the target machine (PROGRESS.md §15.10): base.en-q8_0 is
+ * unbiased and 15.7x real time; turbo is 7x slower with no accuracy gain.
+ * base.en is English-only; pass --model large-v3-turbo-q8_0 for other languages.
+ */
+const DEFAULT_MODEL = 'base.en-q8_0'
 /** Silero VAD weights are 885 KB; the floor only needs to catch a truncated fetch. */
 const VAD_MIN_BYTES = 500_000
 

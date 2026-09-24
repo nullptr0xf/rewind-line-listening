@@ -11,9 +11,12 @@ import type { PlaybackClock } from '@/hooks/usePlaybackClock'
  * The playhead is written straight to the DOM from the frame clock (see the
  * comment in usePlaybackClock). React state here changes only when the play
  * state or the duration changes — i.e. essentially never.
+ *
+ * There is deliberately no ±5s pair here. The line buttons and these arrows
+ * are the navigation; anything finer is the scrub bar or clicking a line in
+ * the transcript. Four buttons that all land "somewhere near here" read as
+ * duplicates, and for 2–4s subtitle lines they behave like it too.
  */
-
-const SEEK_STEP_MS = 5000
 
 type ControlBarProps = {
   videoRef: RefObject<HTMLVideoElement | null>
@@ -210,14 +213,33 @@ export function ControlBar({
     }
   }, [])
 
-  const seekBy = useCallback(
-    (deltaMs: number) => {
-      const video = videoRef.current
-      if (!video) return
-      commitSeek(video.currentTime * 1000 + deltaMs)
-    },
-    [commitSeek, videoRef],
-  )
+  // Arrow keys step between lines, matching the two remaining buttons. Form
+  // controls are excluded — the loop-count input, the rate <select> and the
+  // volume slider all own the arrows for their own purpose, and a focused
+  // range input must not also move the playhead. Modifiers stay untouched so
+  // browser/OS chords keep working.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) return
+      if (event.shiftKey || event.ctrlKey || event.altKey || event.metaKey) return
+      const target = event.target as HTMLElement | null
+      if (
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.tagName === 'SELECT' ||
+          target.isContentEditable)
+      ) {
+        return
+      }
+      if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+      event.preventDefault()
+      if (event.key === 'ArrowLeft') onPreviousLine()
+      else onNextLine()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [onPreviousLine, onNextLine])
 
   const timeFromClientX = useCallback(
     (clientX: number): number | null => {
@@ -316,27 +338,13 @@ export function ControlBar({
           )}
         </IconButton>
 
-        <IconButton onClick={() => seekBy(-SEEK_STEP_MS)} label="Back 5 seconds">
-          <svg viewBox="0 0 16 16" className="size-4" fill="none" stroke="currentColor" strokeWidth="1.5">
-            <path d="M7 3.5 3.5 6.5 7 9.5" strokeLinecap="round" strokeLinejoin="round" />
-            <path d="M3.8 6.5h5.4a3.6 3.6 0 1 1 0 7.2" strokeLinecap="round" />
-          </svg>
-        </IconButton>
-
-        <IconButton onClick={() => seekBy(SEEK_STEP_MS)} label="Forward 5 seconds">
-          <svg viewBox="0 0 16 16" className="size-4" fill="none" stroke="currentColor" strokeWidth="1.5">
-            <path d="M9 3.5 12.5 6.5 9 9.5" strokeLinecap="round" strokeLinejoin="round" />
-            <path d="M12.2 6.5H6.8a3.6 3.6 0 1 0 0 7.2" strokeLinecap="round" />
-          </svg>
-        </IconButton>
-
-        <IconButton onClick={onPreviousLine} label="Previous line">
+        <IconButton onClick={onPreviousLine} label="Previous line (←)">
           <svg viewBox="0 0 16 16" className="size-4" fill="none" stroke="currentColor" strokeWidth="1.5">
             <path d="M4 3v10M12 4.2v7.6L6.5 8 12 4.2Z" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
         </IconButton>
 
-        <IconButton onClick={onNextLine} label="Next line">
+        <IconButton onClick={onNextLine} label="Next line (→)">
           <svg viewBox="0 0 16 16" className="size-4" fill="none" stroke="currentColor" strokeWidth="1.5">
             <path d="M12 3v10M4 4.2v7.6L9.5 8 4 4.2Z" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
