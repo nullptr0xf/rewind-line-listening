@@ -12,12 +12,17 @@ import { assembleWords, isSpecialToken, parseWhisperJson, type WhisperJson } fro
  * whisper.cpp emits it, and `offsets` are deliberately all zeros — that is what
  * the real binary produces for interior tokens, and relying on them is the bug
  * this module exists to avoid.
+ *
+ * `to` defaults to a second after `from`; VAD tests set it deliberately to
+ * simulate the padding a real VAD segment carries beyond its last token.
  */
-function build(segments: Array<{ from: number; tokens: Array<[string, number | null]> }>): WhisperJson {
+function build(
+  segments: Array<{ from: number; to?: number; tokens: Array<[string, number | null]> }>,
+): WhisperJson {
   return parseWhisperJson(
     JSON.stringify({
       transcription: segments.map((s) => ({
-        offsets: { from: s.from, to: s.from + 1000 },
+        offsets: { from: s.from, to: s.to ?? s.from + 1000 },
         text: '',
         tokens: s.tokens.map(([text, t]) => ({
           text,
@@ -148,6 +153,77 @@ describe('assembleWords', () => {
   })
 })
 
+/**
+ * With `--vad` the token positions live in whisper's speech-only timeline while
+ * `offsets` stay in the audio, so the two have to be reconciled. The reconciler
+ * is a *translation*, not a rescale — measured on the real fixture, the gap
+ * between the timelines grows monotonically (700ms → 6420ms, i.e. exactly the
+ * silence deleted so far) while the segment span exceeds the token span by a
+ * median factor of 1.09.
+ */
+describe('assembleWords with --vad', () => {
+  it('translates a segment by a constant offset instead of rescaling it', () => {
+    // `to` is 9x the token span. A rescale would multiply every inter-token gap
+    // by 9 (100ms → 900ms); a translation leaves them alone. Silence removal
+    // deletes time, it does not change speaking rate.
+    const { words } = assembleWords(
+      build([{ from: 5_000, to: 14_000, tokens: [[' a', 100], [' b', 110], [' c', 120]] }]),
+      { vad: true },
+    )
+    const gaps = words.slice(1).map((w, i) => w.e - words[i].e)
+    expect(gaps).toEqual([100, 100])
+    expect(words[words.length - 1].e).toBe(5_200)
+  })
+
+  it("starts a segment's first word at that segment's own offset, keeping the pause", () => {
+    // 7s of real silence sits between the two utterances. Chaining to the
+    // previous segment's boundary would swallow all of it; the offset keeps it.
+    const { words } = assembleWords(
+      build([
+        { from: 1_000, to: 2_000, tokens: [[' a', 100]] },
+        { from: 9_000, to: 10_000, tokens: [[' b', 200]] },
+      ]),
+      { vad: true },
+    )
+    expect(words[1].s).toBe(9_000)
+  })
+
+  it('leaves the offsets alone when vad is not set', () => {
+    // Without VAD the token timeline *is* the audio timeline — measured coverage
+    // 0.9998 — so translating here would corrupt every timestamp.
+    const { words } = assembleWords(
+      build([{ from: 1_000, to: 2_000, tokens: [[' a', 100], [' b', 110]] }]),
+    )
+    expect(words.map((w) => w.e)).toEqual([1_000, 1_100])
+  })
+
+  it('leaves a VAD segment its first word with no measurable duration', () => {
+    // The known cost of anchoring at `offsets.from`: only one anchor is known
+    // for the segment's first token, so its end lands on its own start. Pinned
+    // here so a future reader sees it is understood, not overlooked —
+    // `segment.ts` normalizes it when building cues.
+    const { words } = assembleWords(
+      build([{ from: 5_000, to: 6_000, tokens: [[' a', 100], [' b', 150]] }]),
+      { vad: true },
+    )
+    expect(words[0]).toMatchObject({ s: 5_000, e: 5_000 })
+    expect(words[1]).toMatchObject({ s: 5_000, e: 5_500 })
+  })
+
+  it('warns when a run clearly used --vad but was not told so', () => {
+    // Token timeline covers 11% of the audio: the signature of skipped silence.
+    const { warnings } = assembleWords(build([{ from: 8_000, to: 9_000, tokens: [[' hi', 100]] }]))
+    expect(warnings.join(' ')).toMatch(/used --vad/)
+  })
+
+  it('warns when told --vad for a run that plainly did not use it', () => {
+    const { warnings } = assembleWords(build([{ from: 0, to: 1_000, tokens: [[' hi', 100]] }]), {
+      vad: true,
+    })
+    expect(warnings.join(' ')).toMatch(/already absolute/)
+  })
+})
+
 describe('whisper → segment, end to end on a synthetic transcript', () => {
   it('produces sentence cues with clean punctuation from raw tokens', () => {
     // Two sentences glued into one whisper segment, exactly the situation the
@@ -174,5 +250,18 @@ describe('whisper → segment, end to end on a synthetic transcript', () => {
     const { cues } = segmentWords(words)
     expect(cues.map((c) => c.text)).toEqual(['I moved here last year.', 'It was hard.'])
     expect(cues[0].words?.map((w) => w.w)).toEqual(['I', 'moved', 'here', 'last', 'year.'])
+  })
+
+  it('absorbs a degenerate VAD first word into a usable cue', () => {
+    // The VAD anchor leaves the segment's first word zero-length; the segmenter
+    // is what makes that harmless, so this asserts the two modules agree.
+    const { words } = assembleWords(
+      build([{ from: 5_000, to: 6_000, tokens: [[' Hello', 100], [' there', 150], [' friend', 200]] }]),
+      { vad: true },
+    )
+    const { cues } = segmentWords(words)
+    expect(cues).toHaveLength(1)
+    expect(cues[0].start).toBe(5_000)
+    expect(cues[0].text).toBe('Hello there friend')
   })
 })

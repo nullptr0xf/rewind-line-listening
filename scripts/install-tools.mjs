@@ -47,8 +47,8 @@ const MODELS = {
   'base.en-q8_0': { file: 'ggml-base.en-q8_0.bin', dtw: 'base.en', minBytes: 70e6 },
 }
 const DEFAULT_MODEL = 'large-v3-turbo-q8_0'
-/** Silero VAD is small; the floor only needs to catch a truncated fetch. */
-const VAD_MIN_BYTES = 1e6
+/** Silero VAD weights are 885 KB; the floor only needs to catch a truncated fetch. */
+const VAD_MIN_BYTES = 500_000
 
 const argv = process.argv.slice(2)
 const force = argv.includes('--force')

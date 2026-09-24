@@ -10,6 +10,7 @@
     "ingest": "tsx bin/ingest.ts",
     "tools:install": "node scripts/install-tools.mjs",
     "bench:asr": "tsx scripts/bench-asr.ts",
+    "inspect:timeline": "tsx scripts/inspect-timeline.ts",
     "fixture": "node scripts/make-fixture.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"

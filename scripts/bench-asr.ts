@@ -21,6 +21,7 @@
  *   npm run bench:asr -- --truth subs/ep01.en.vtt --wav ep01.wav
  *   npm run bench:asr -- --media "F:\videos\ep01.mp4"   # wav extracted for you
  *   npm run bench:asr -- --models base.en-q8_0
+ *   npm run bench:asr -- --no-vad                       # compare without Silero
  */
 
 import fs from 'node:fs'
@@ -37,6 +38,9 @@ const cli = path.join(projectRoot, 'tools', 'whisper', 'Release', 'whisper-cli.e
 const modelsDir = path.join(projectRoot, 'tools', 'whisper', 'models')
 const scratchDir = path.join(projectRoot, 'tools', 'whisper', '_bench')
 
+/** Silero VAD weights, staged by `npm run tools:install`. */
+const VAD_FILE = 'ggml-silero-v5.1.2.bin'
+
 /** `minBytes` catches a truncated model; the GGML magic alone cannot. */
 const MODELS: Record<string, { file: string; dtw: string; minBytes: number }> = {
   'base.en-q8_0': { file: 'ggml-base.en-q8_0.bin', dtw: 'base.en', minBytes: 70e6 },
@@ -50,6 +54,13 @@ const WER_BAR_PERCENT = 5
 
 /** Recognising is CPU-bound; give whisper-cli every core unless told otherwise. */
 const THREADS = Number(process.env.BENCH_THREADS ?? 0) || Math.max(2, os.availableParallelism())
+
+/**
+ * Silero VAD is step ④ of the designed pipeline (doc §4.3), so it is on by
+ * default. It is worth toggling: it is what trims the leading silence that
+ * otherwise lands in the first segment's `offsets` and shifts a whole cue.
+ */
+const USE_VAD = !process.argv.includes('--no-vad')
 
 function arg(name: string): string | null {
   const index = process.argv.indexOf(`--${name}`)
@@ -144,6 +155,30 @@ function wordErrorRate(ref: string[], hyp: string[]) {
 const clock = (t: number) =>
   `${String(Math.floor(t / 60000)).padStart(2, '0')}:${String(Math.floor((t % 60000) / 1000)).padStart(2, '0')}.${String(Math.round(t % 1000)).padStart(3, '0')}`
 
+/**
+ * Nearest-match boundary error, kept *signed*.
+ *
+ * The sign is the whole point: a noisy-but-honest ±100ms and a systematic
+ * −550ms bias produce the same median of absolute values but need different
+ * responses — the first is a limitation, the second is a bug or the wrong model.
+ * Nearest-match (rather than index-paired) keeps one merged cue from reporting
+ * as a 15-second outlier.
+ */
+function boundaryError(produced: number[], reference: number[]) {
+  const signed = reference.map((r) => {
+    const nearest = produced.reduce((best, p) => (Math.abs(p - r) < Math.abs(best - r) ? p : best), Infinity)
+    return nearest - r
+  })
+  const abs = signed.map(Math.abs).sort((a, b) => a - b)
+  return {
+    signed,
+    median: abs[Math.floor(abs.length / 2)],
+    p90: abs[Math.floor(abs.length * 0.9)],
+    worst: abs[abs.length - 1],
+    meanSigned: signed.reduce((a, b) => a + b, 0) / signed.length,
+  }
+}
+
 function ensureWav(): void {
   if (fs.existsSync(wavPath)) return
   fs.mkdirSync(path.dirname(wavPath), { recursive: true })
@@ -200,10 +235,16 @@ function main(): void {
       if (f.startsWith(name)) fs.unlinkSync(path.join(scratchDir, f))
     }
 
+    const vadPath = path.join(modelsDir, VAD_FILE)
+    const vadArgs = USE_VAD && fs.existsSync(vadPath) ? ['--vad', '-vm', vadPath] : []
+    if (USE_VAD && vadArgs.length === 0) {
+      console.log(`  ! Silero weights missing (${VAD_FILE}) — running without VAD; npm run tools:install stages them`)
+    }
+
     const started = Date.now()
     const run = spawnSync(
       cli,
-      ['-m', modelPath, '-f', wavPath, '-l', 'en', '-ojf', '-of', prefix, '-dtw', spec.dtw, '-t', String(THREADS)],
+      ['-m', modelPath, '-f', wavPath, '-l', 'en', ...vadArgs, '-ojf', '-of', prefix, '-dtw', spec.dtw, '-t', String(THREADS)],
       { encoding: 'utf8', timeout: 3_600_000, maxBuffer: 256 * 1024 * 1024 },
     )
     const elapsed = (Date.now() - started) / 1000
@@ -215,7 +256,9 @@ function main(): void {
     console.log(`  ${elapsed.toFixed(1)}s → ${(audioSeconds / elapsed).toFixed(2)}× real time`)
 
     const json = parseWhisperJson(fs.readFileSync(`${prefix}.json`, 'utf8'))
-    const assembled = assembleWords(json)
+    // Must mirror what whisper-cli was actually given: with --vad the token
+    // timings are in whisper's speech-only timeline and have to be rescaled.
+    const assembled = assembleWords(json, { vad: vadArgs.length > 0 })
     const seg = segmentWords(assembled.words)
     console.log(`  whisper segments ${json.transcription.length} → words ${assembled.words.length} → cues ${seg.cues.length}  (reference ${truth.length})`)
     for (const w of [...assembled.warnings, ...seg.warnings]) console.log(`  ! ${w}`)
@@ -223,13 +266,39 @@ function main(): void {
     const score = wordErrorRate(refWords, normalize(seg.cues.map((c) => c.text).join(' ')))
     console.log(`  WER ${score.rate.toFixed(2)}%  (${score.errors} edits / ${refWords.length} words)  ${score.rate <= WER_BAR_PERCENT ? 'PASS' : 'OVER THE 5% BAR'}`)
 
-    const starts = seg.cues.map((c) => c.start)
-    const errors = truth
-      .map((c) => starts.reduce((best, s) => Math.min(best, Math.abs(s - c.start)), Infinity))
-      .sort((a, b) => a - b)
-    const mean = errors.reduce((a, b) => a + b, 0) / errors.length
-    const median = errors[Math.floor(errors.length / 2)]
-    console.log(`  cue-start error: mean ${mean.toFixed(0)}ms  median ${median.toFixed(0)}ms  p90 ${errors[Math.floor(errors.length * 0.9)].toFixed(0)}ms`)
+    const starts = boundaryError(seg.cues.map((c) => c.start), truth.map((c) => c.start))
+    const ends = boundaryError(seg.cues.map((c) => c.end), truth.map((c) => c.end))
+    const show = (label: string, s: ReturnType<typeof boundaryError>) =>
+      console.log(
+        `  ${label}: median ${s.median.toFixed(0)}ms  p90 ${s.p90.toFixed(0)}ms  worst ${s.worst.toFixed(0)}ms  ` +
+          `signed mean ${s.meanSigned >= 0 ? '+' : ''}${s.meanSigned.toFixed(0)}ms`,
+      )
+    show('cue-start', starts)
+    show('cue-end  ', ends)
+
+    // A negative cue-end bias is expected and is not drift: the reference keeps
+    // its cues contiguous (each ends exactly where the next begins), whereas we
+    // end a cue at the last word's real acoustic end. The difference is the
+    // inter-line pause. Say so, or the number reads as a defect forever.
+    const touching = truth.filter((c, i) => i + 1 < truth.length && Math.abs(c.end - truth[i + 1].start) < 120).length
+    if (touching > (truth.length - 1) * 0.8) {
+      console.log(
+        `  (reference cues are contiguous — ${touching}/${truth.length - 1} of its ends touch the next start — ` +
+          'so a negative cue-end bias of about one pause is a convention difference, not drift)',
+      )
+    }
+
+    // Sensitivity check. When --vad is on, whisper splits exactly where the
+    // silences are, so on a well-cut fixture every cue can land on a segment
+    // boundary — and then the cue-start number is scoring `offsets.from` alone
+    // while the whole token timeline goes unmeasured. Say so rather than let a
+    // good number read as validation.
+    const offsets = new Set(json.transcription.map((s) => s.offsets.from))
+    const onBoundary = seg.cues.filter((c) => offsets.has(c.start)).length
+    console.log(
+      `  ${onBoundary}/${seg.cues.length} cue starts sit exactly on a whisper segment offset` +
+        (onBoundary === seg.cues.length ? ' — this fixture can only score the offset, not the token timeline' : ''),
+    )
 
     console.log('  first 6 cues:')
     for (const cue of seg.cues.slice(0, 6)) console.log(`    [${clock(cue.start)} → ${clock(cue.end)}] ${cue.text}`)
@@ -263,7 +332,7 @@ function main(): void {
     console.log(score.notable.length ? score.notable.join('\n') : '    none')
     console.log()
 
-    outcomes.push({ name, rate: score.rate, cues: seg.cues.length, median })
+    outcomes.push({ name, rate: score.rate, cues: seg.cues.length, median: starts.median })
   }
 
   if (outcomes.length > 1) {

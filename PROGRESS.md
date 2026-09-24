@@ -4,9 +4,10 @@ Status log for the English Listening project. Read this first — it is written 
 that a fresh session with no context can pick the work up.
 
 Last updated: 2026-09-24 (M0 complete; **light study theme** + the fixture's test
-pattern replaced by the audio's own waveform — §14; **M1 started — Step 0 gate
-passed on the CPU build, sentence re-splitter and whisper reader built and
-measured** — §15)
+pattern replaced by the audio's own waveform — §14; **M1 Step 0 gate passed on the
+CPU build** — sentence re-splitter, whisper reader and the acceptance harness are
+built and measured, and the `--vad` timeline split is understood and handled —
+§15, §15.10)
 
 ---
 
@@ -71,8 +72,10 @@ from the LAN.
 | `segment.ts` — the sentence re-splitter (doc §4.4) | implemented 2026-09-24 — see §15.4 |
 | whisper.cpp JSON reader + token→word assembly | implemented 2026-09-24 — see §15.4 |
 | `npm run bench:asr` — ASR/segmentation acceptance harness | implemented 2026-09-24 — see §15.4 |
+| `npm run inspect:timeline` — explains *why* timings are off | implemented 2026-09-24 — see §15.10 |
 | `npm run tools:install` stages whisper.cpp, a model, Silero VAD | implemented 2026-09-24 — see §15.7 |
-| Unit tests over the pure modules | 100 passing — see §11 |
+| `--vad` timeline reconciliation (the speech-vs-audio split) | implemented 2026-09-24 — see §15.10 |
+| Unit tests over the pure modules | 107 passing — see §11 |
 
 ### Deliberately NOT implemented yet
 
@@ -384,7 +387,14 @@ the script exited 1 — that is now fixed. The rule for what gets a test: any
 module that is a pure function of its arguments and encodes a decision that is
 expensive to debug through the UI. That is `range.ts`, `vtt.ts`,
 `findActiveCue.ts`, and — added in §15 — `segment.ts` and `whisper.ts`; all five
-are covered above. The count is **100 tests**.
+are covered above. The count is **107 tests**.
+
+The one caveat learned the hard way (§15.10): a green suite says the code does
+what the *tests* were written to check, and the tests were written from the same
+misunderstanding that produced the bug. All 107 passed while `--vad` was shifting
+every cue by ~900 ms — because nothing in the suite contained a VAD timeline,
+which was the entire defect. Numbers that came from *measuring reality*
+(`npm run bench:asr`, `npm run inspect:timeline`) are what caught it.
 
 `segment.ts` deserves the most tests of anything in the project, and for a
 specific reason: its rules are *ordered* (rule 4 legitimately undoes rule 3 for a
@@ -771,9 +781,10 @@ The prebuilt `whisper-bin-x64.zip` (v1.7.6) is a **CPU build**. There is no
 Vulkan binary in the upstream release, so "whisper.cpp + Vulkan" was never
 actually obtained — and it turns out not to matter yet.
 
-| Model | Backend | Fixture (123.7s) | Real-time multiple |
-|---|---|---|---|
-| `base.en-q8_0` (82 MB) | CPU, 8–16 threads | **7.0–8.8 s** | **14–18×** |
+| Model | Backend | Fixture (123.7s) | Real-time multiple | WER |
+|---|---|---|---|---|
+| `base.en-q8_0` (78 MB) | CPU, 8–16 threads | **7.9 s** | **15.7×** | 1.00% |
+| `large-v3-turbo-q8_0` (834 MB) | CPU, 8–16 threads | **58.0 s** | **2.13×** | 1.00% |
 
 Against the doc's premise (§6: "CPU ≈ 0.3× real time"), that is roughly **50×
 better than predicted**. Two reasons, both worth writing down:
@@ -781,12 +792,16 @@ better than predicted**. Two reasons, both worth writing down:
 1. The doc's 0.3× figure is for **full `large-v3`**, not `-turbo` and not `-q8_0`.
 2. §6's Vulkan numbers came from a **Core Ultra 7 155H**, a different chip.
 
-So the expensive detour (Vulkan SDK + CMake + a toolchain whose own download is
-a reachability question — §9 route #2, "a real afternoon") is **not obviously
-required**. What still has to be measured is **turbo on CPU**, because that is
-the model the doc actually wants for quality; its 856 MB weights would not
-finish downloading here (see §15.7). Until that number exists, treat "Vulkan
-needed" as unproven rather than decided.
+**And the turbo number settles the question.** Both models reach the same WER
+(1.00%, 4 edits) on this fixture, so the 7× slower model buys nothing measurable
+while costing 7× the time — and it is also *worse* on boundaries, for a reason
+found later (§15.10). So the expensive detour (Vulkan SDK + CMake + a toolchain
+whose own download is a reachability question — §9 route #2, "a real afternoon")
+is **not required**: the CPU build clears the bar by more than an order of
+magnitude, and the model that would have justified the GPU is not an upgrade.
+
+Vulkan would still matter for a **much larger** model (`large-v3` non-turbo) on
+longer files. That is a lever to keep in the drawer, not a prerequisite.
 
 ### 15.2 `offsets` are unusable — `t_dtw` is the real timeline
 
@@ -800,6 +815,11 @@ The single most useful finding. With `-ojf`, whisper.cpp gives every token an
   segment**, which is exactly the "时间戳漂移" risk in §17.
 - `t_dtw` is a **global** frame counter (it does not restart per segment) in
   **10 ms units**: max `t_dtw` 12198 → 122.0 s against 123.7 s of audio.
+
+> **Correction added in §15.10.** "Global" is true only when `--vad` is **off**.
+> Under `--vad` the same counter runs on whisper's *speech-only* timeline, and the
+> reader has to translate it. Read §15.10 before trusting any timing from a
+> `--vad` run.
 
 **And `t_dtw` marks each token's END, not its start.** Decided by running both
 readings against the fixture's hand-verified VTT and scoring all 36 sentences:
@@ -845,9 +865,10 @@ What is actually available, in order of usefulness:
 | File | What it is | Tests |
 |---|---|---|
 | `lib/lesson/segment.ts` | The sentence re-splitter, doc §4.4 rules 1–6 | 29 |
-| `lib/lesson/whisper.ts` | whisper JSON reader + token→word assembly + DTW timeline | 12 |
+| `lib/lesson/whisper.ts` | whisper JSON reader + token→word assembly + timeline reconciliation | 19 |
 | `scripts/install-tools.mjs` | now also stages whisper.cpp + a model + Silero VAD | — |
 | `scripts/bench-asr.ts` | `npm run bench:asr` — M1's acceptance criterion, executable | — |
+| `scripts/inspect-timeline.ts` | `npm run inspect:timeline` — *why* timings are off, not just how far | — |
 
 `segment.ts` is deliberately a pure function of `CueWord[]`, so it does not care
 which route produced the words. That is what let §9's "decide the route **before**
@@ -855,7 +876,7 @@ writing `segment.ts`" be satisfied without waiting: the schema already had the
 right shape (`CueWord {w,s,e}`), and both a DTW timeline and a forced aligner
 produce it.
 
-Test count went **59 → 100**.
+Test count went **59 → 100 → 107**.
 
 ### 15.5 One documented deviation, and the fixture vindicated it
 
@@ -909,31 +930,133 @@ Confirmed working (HTTP 206 via ranged GET):
 ### 15.8 Verification log additions
 
 - `npm run typecheck` — clean
-- `npm test` — **100 passing** (was 59)
-- `npm run bench:asr -- --models base.en-q8_0` — fixture, 7.4 s, 16.6× real time,
-  **WER 1.25%** (5 edits / 401 words), cue-start median **48 ms** / p90 **95 ms**,
-  38 cues vs the reference's 36
+- `npm test` — **107 passing** (was 59, then 100)
+- `npm run bench:asr -- --models base.en-q8_0,large-v3-turbo-q8_0` — fixture, VAD on:
+
+| Model | Time | WER | cue-start median | signed mean | cue-end signed mean |
+|---|---|---|---|---|---|
+| `base.en-q8_0` | 7.9 s (15.7×) | 1.00% | **102 ms** | **+39 ms** | −293 ms |
+| `large-v3-turbo-q8_0` | 58.0 s (2.13×) | 1.00% | 555 ms | **−517 ms** | — |
+
+  The signed column is what made the turbo problem visible at all; a median of
+  absolute values cannot distinguish a noisy 100 ms from a settled 550 ms.
+  The −293 ms cue-end bias is a **convention difference** (the hand-made VTT makes
+  its cues contiguous; we end a cue at the last word's real acoustic end), not
+  drift — the harness now says so in its own output.
+- 38 cues vs the reference's 36, WER **1.00%** (4 edits / 401 words).
 - the 3 "extra" cues are `"Mostly, the weather…"`, `"A sentence I could read in
   three seconds goes by in one."` and `"Let the sentence finish and then go
   back."` — all genuine sentences in the source text that the **hand-made VTT had
   merged**. The count difference is the reference being coarser, not the
   segmenter being wrong. Worth a human read to confirm.
-- the 5 text edits are `belong→belonged`, `ear→ears`, `stopped→stop`,
+- the 4 text edits are `belong→belonged`, `ear→ears`, `stopped→stop`,
   `so→while`, and `practising→practicing` (a spelling variant, not an error)
 
 **Caveat that matters for M1's acceptance:** this is clean neural TTS with no
-music, noise or accent. It is the easiest possible input, so 1.25% is a
+music, noise or accent. It is the easiest possible input, so 1% is a
 best case, not an expectation. §16's acceptance bar (3 video types, under 5%)
 still needs real material.
 
+**Second caveat, added in §15.10:** on this fixture *every* cue start lands
+exactly on a whisper segment boundary, so the cue-start number is scoring
+`offsets.from` alone and the token timeline is never exercised. A good number
+here is not evidence about the interior alignment. The harness now prints this
+coincidence explicitly.
+
 ### 15.9 Still open
 
-- **`large-v3-turbo-q8_0` on CPU is unmeasured** (856 MB would not finish
-  downloading). This is the one number that decides whether Vulkan is worth
-  building. `medium.en-q5_0` is a cheaper second data point.
-- **Silero VAD is staged but never exercised.** `--vad -vm` is untested here.
+- **Silero VAD is exercised now (§15.10)** — and it does not mean what it first
+  looked like it meant; the whole timeline needs translating.
 - **Hallucination filtering is not implemented** — see §15.3 for what is and is
   not possible.
+- **Real material is still untested.** Everything here is one 124 s neural-TTS
+  fixture, and §15.10 shows it cannot even exercise the interior token timeline.
+  M1's actual bar (3 kinds of video, under 5% WER, segmentation read line by
+  line) is untouched until there is a real video.
+- **The cue-end convention is decided but not yet felt.** We end cues at the last
+  word's real end; the reference VTT makes them contiguous. Both are defensible;
+  a 300 ms gap between lines may read as deliberate (the line dims during the
+  pause) or as a glitch. Needs a human ear once there is real audio.
 - M1 steps 3–5 (embedded-subtitle extraction, job runner + SSE, UI wiring) have
   not been started. `segment.ts` and `whisper.ts` are the two hardest pieces and
   they are done and tested.
+
+### 15.10 The VAD timeline split — 2026-09-24
+
+The regression that mattered, and the one finding on this project that no amount
+of unit testing would have produced. It is worth reading before touching
+`whisper.ts`.
+
+**Symptom.** Turning `--vad` on — step ④ of the designed pipeline, so it is on by
+default — took cue-start error from a median **48 ms** to **~900 ms** (turbo
+992 ms, base 885 ms). Text was perfect throughout. Only the *times* moved, and
+they moved in a way that grew through the file.
+
+**Cause.** `--vad` makes whisper.cpp recognise a *concatenation of the speech
+chunks*. So there are two timelines in one JSON:
+
+- token `t_dtw` / `offsets` describe position **within speech** — every silence
+  in the file has been deleted from this counter;
+- each segment's own `offsets` stay in **original audio** time, and VAD actually
+  makes them *better* (segment 0 reports 740 ms against a hand-checked 700 ms,
+  where without VAD the same segment claimed 0 ms).
+
+The first cue was off by ~700 ms and every later cue by all the silence skipped
+so far. The tell is the coverage ratio:
+
+| Run | token timeline end / audio end |
+|---|---|
+| no VAD | **0.9998** |
+| `--vad` | **0.9470** |
+
+That single ratio is now what `whisper.ts` uses to warn when the `vad` flag
+disagrees with the data it was handed — a wrong flag silently corrupts every
+timestamp, so it is checked rather than trusted.
+
+**The fix, and the wrong fix.** The obvious reconciliation is a linear rescale of
+each segment's tokens onto `[offsets.from, offsets.to]`. It is wrong, and the
+measurement says so twice:
+
+| Evidence | Value | What it rules out |
+|---|---|---|
+| shift `offsets.from − posFirst`, segment 0 → last | 700 ms → **6420 ms**, monotonic | a *global* offset |
+| stretch `audioSpan / tokenSpan` | median **1.094** | a *rescale* |
+
+Silence removal **deletes** time; it does not change speaking rate. So a segment's
+inter-token durations must survive untouched, and the correct map is a pure
+**translation per segment** by `offsets.from − posFirst`. The rescale would have
+stretched every gap by 9.4% — inaudible in a WER check, wrong in a player.
+
+Alternatives were measured rather than argued. Chaining a segment's first word to
+the previous segment's last boundary is **worse** (base 178 ms, turbo 983 ms), so
+`offsets.from` stays as the seed.
+
+**The known cost.** With only one anchor, a segment's first word lands on its own
+start and has no measurable duration. Pinned down in `whisper.test.ts` as a
+documented consequence, and absorbed by `segment.ts`'s existing degenerate-span
+normalisation — not papered over with an invented minimum.
+
+**Two things this changed in the tooling, both because the old metric lied:**
+
+1. `bench-asr.ts` reported only a *median of absolute* boundary errors. That
+   cannot separate "noisy but honest" from "systematically early", and those need
+   opposite responses. It now reports **signed** means, and cue ends as well as
+   starts. Turbo's −517 ms bias was invisible before and obvious after.
+2. It now reports how many cue starts coincide with a segment boundary. On this
+   fixture: **38/38**. So the cue-start number was only ever scoring
+   `offsets.from`, and the token timeline — the entire point of `-dtw` — was
+   going unmeasured. A harness that cannot see the thing you are fixing is how
+   the first "fix" got through.
+
+**The model conclusion.** `large-v3-turbo-q8_0` puts its VAD segments ~550 ms
+early on *every* cue (signed mean −517 ms, median −555 ms), while being 7× slower
+and no more accurate. `base.en-q8_0` is unbiased (+39 ms signed) at 15.7× real
+time. **Default to `base.en-q8_0`**; keep turbo available but not as a default,
+and do not build a Vulkan toolchain for it.
+
+**The honest limitation.** Because 38/38 cue starts sit on segment boundaries,
+this fixture *cannot* score the interior token timeline at all. The translation
+is justified by the two measurements above and by what VAD physically does — not
+by the fixture agreeing with it. Real material is what will test it, and until
+then the interior mapping should be described as reasoned, not validated.
+
