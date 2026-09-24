@@ -33,6 +33,13 @@ yarn-error.log*
 _shots/
 _tmp_*
 
+# scratch: ad-hoc probe/analysis scripts run from the repo root. These are how
+# unknowns get measured (see PROGRESS) and they are deliberately disposable —
+# anything worth keeping graduates into scripts/.
+/_*.mjs
+/_*.ts
+/_*.cjs
+
 # editor / os
 .vscode/*
 !.vscode/extensions.json

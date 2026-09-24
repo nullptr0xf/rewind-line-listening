@@ -4,7 +4,9 @@ Status log for the English Listening project. Read this first — it is written 
 that a fresh session with no context can pick the work up.
 
 Last updated: 2026-09-24 (M0 complete; **light study theme** + the fixture's test
-pattern replaced by the audio's own waveform — §14; M1 not started)
+pattern replaced by the audio's own waveform — §14; **M1 started — Step 0 gate
+passed on the CPU build, sentence re-splitter and whisper reader built and
+measured** — §15)
 
 ---
 
@@ -66,12 +68,18 @@ from the LAN.
 | Progress memory (resume where you left off) | implemented |
 | Light "study" theme, semantic colour tokens | implemented 2026-09-24 — see §14 |
 | Audio-only lessons get a designed face instead of a blank box | implemented 2026-09-24 — see §14 |
-| Unit tests over the pure modules | 59 passing — see §11 |
+| `segment.ts` — the sentence re-splitter (doc §4.4) | implemented 2026-09-24 — see §15.4 |
+| whisper.cpp JSON reader + token→word assembly | implemented 2026-09-24 — see §15.4 |
+| `npm run bench:asr` — ASR/segmentation acceptance harness | implemented 2026-09-24 — see §15.4 |
+| `npm run tools:install` stages whisper.cpp, a model, Silero VAD | implemented 2026-09-24 — see §15.7 |
+| Unit tests over the pure modules | 100 passing — see §11 |
 
 ### Deliberately NOT implemented yet
 
-- **ASR of any kind.** That is M1. `bin/ingest.ts` reports "no transcript yet"
-  for a file with no subtitle, which is the correct M0 behaviour.
+- **The ASR pipeline.** The two hard pieces exist and are tested (§15.4), but
+  nothing connects them: there is no `ffmpeg → whisper-cli → lesson.json` runner,
+  no transcription API, no job progress, and `bin/ingest.ts` still reports "no
+  transcript yet" for a file with no subtitle. That is M1 steps 3–5.
 - **Upload / drag-and-drop import.** The design doc lists it as entry point #2
   and explicitly as the fallback, because a browser cannot hand us a real
   filesystem path. Only entry #1 (path) and #3 (CLI) exist. Deferred.
@@ -374,10 +382,16 @@ Slow-playback grain, 2026-09-24 (§13):
 `vitest` was already wired up (`npm test`) but there were **no test files**, so
 the script exited 1 — that is now fixed. The rule for what gets a test: any
 module that is a pure function of its arguments and encodes a decision that is
-expensive to debug through the UI. That is `range.ts`, `vtt.ts` and
-`findActiveCue.ts`; all three are covered above.
+expensive to debug through the UI. That is `range.ts`, `vtt.ts`,
+`findActiveCue.ts`, and — added in §15 — `segment.ts` and `whisper.ts`; all five
+are covered above. The count is **100 tests**.
 
-Two things this suite already paid for:
+`segment.ts` deserves the most tests of anything in the project, and for a
+specific reason: its rules are *ordered* (rule 4 legitimately undoes rule 3 for a
+sub-second clause), so the interactions are the hard part, not the individual
+rules. The suite pins the interactions, not just the rules.
+
+Three findings this suite paid for:
 
 - `findPreviousCueIndex` returned `0` for an empty transcript while
   `findNextCueIndex` returned `-1`. Unreachable today (its only caller checks
@@ -385,6 +399,11 @@ Two things this suite already paid for:
   consistent, so callers can uniformly test `< 0`.
 - `parseSubtitleText` returns `{ cues, report }`, not `{ cues, format }`. Written
   down here because the first version of the round-trip test got it wrong.
+- `classifyEnding` treated a trailing `"10."` as a numbered-list marker, so
+  `"…the streets are after 10."` never ended a sentence. The unit test suite did
+  not miss this — it **asserted the wrong behaviour**, which is worse. Only the
+  end-to-end run against real whisper output (§15.6) exposed it. When a test and
+  reality disagree, check which one you wrote from a measurement.
 
 `vitest.config.ts` mirrors the `@/*` path alias from `tsconfig.json`. Vitest does
 not read tsconfig paths, so without it any test importing `lib/sync` or
@@ -735,3 +754,186 @@ rectangle. The distinction is written into the CSS next to the keyframes.
   the recorded `sizeBytes` against the file and surface a mismatch the way
   `missingSince` is surfaced.
 - M1 Step 0 (whisper.cpp gate) is untouched. §9's route table stands.
+
+## 15. M1 Step 0: the whisper.cpp gate — 2026-09-24
+
+Step 0 in the design doc was: *"get whisper.cpp running with the Vulkan backend
+on this machine's Arc 140T and confirm it transcribes the fixture faster than
+real time. If this fails, the whole M1 plan needs rethinking."*
+
+**The gate passes.** But it passed on the route the doc treated as the fallback,
+and measuring it turned up two things the doc gets wrong. Both numbers below are
+measured on this machine, not quoted.
+
+### 15.1 Measured: CPU-only is already far past the bar
+
+The prebuilt `whisper-bin-x64.zip` (v1.7.6) is a **CPU build**. There is no
+Vulkan binary in the upstream release, so "whisper.cpp + Vulkan" was never
+actually obtained — and it turns out not to matter yet.
+
+| Model | Backend | Fixture (123.7s) | Real-time multiple |
+|---|---|---|---|
+| `base.en-q8_0` (82 MB) | CPU, 8–16 threads | **7.0–8.8 s** | **14–18×** |
+
+Against the doc's premise (§6: "CPU ≈ 0.3× real time"), that is roughly **50×
+better than predicted**. Two reasons, both worth writing down:
+
+1. The doc's 0.3× figure is for **full `large-v3`**, not `-turbo` and not `-q8_0`.
+2. §6's Vulkan numbers came from a **Core Ultra 7 155H**, a different chip.
+
+So the expensive detour (Vulkan SDK + CMake + a toolchain whose own download is
+a reachability question — §9 route #2, "a real afternoon") is **not obviously
+required**. What still has to be measured is **turbo on CPU**, because that is
+the model the doc actually wants for quality; its 856 MB weights would not
+finish downloading here (see §15.7). Until that number exists, treat "Vulkan
+needed" as unproven rather than decided.
+
+### 15.2 `offsets` are unusable — `t_dtw` is the real timeline
+
+The single most useful finding. With `-ojf`, whisper.cpp gives every token an
+`offsets.from/to` **and** a `t_dtw`. The obvious choice is wrong:
+
+- Interior tokens routinely come back **degenerate** (`from === to`): 49 of 463.
+- Worse, **each segment's `offsets.from` includes the leading silence** before
+  its first word. Segment 0 reports `offsets.from = 0` while its first word
+  actually starts at 780 ms — an **800 ms error on the first cue of every
+  segment**, which is exactly the "时间戳漂移" risk in §17.
+- `t_dtw` is a **global** frame counter (it does not restart per segment) in
+  **10 ms units**: max `t_dtw` 12198 → 122.0 s against 123.7 s of audio.
+
+**And `t_dtw` marks each token's END, not its start.** Decided by running both
+readings against the fixture's hand-verified VTT and scoring all 36 sentences:
+
+| Reading | cue-start mean err | p90 | cue-end mean err | p90 |
+|---|---|---|---|---|
+| `t_dtw` = token start | 240 ms | 275 ms | 256 ms | 275 ms |
+| **`t_dtw` = token end** | **175 ms** | **700 ms** | **178 ms** | **193 ms** |
+
+The means are close, so the decision rests on the joins: at sentence boundaries
+the "end" reading reproduces the VTT to **3 ms** (4760 vs 4763 ms) where the
+"start" reading is consistently ~80 ms late. A token therefore spans
+`[previous token's t_dtw, this token's t_dtw]`.
+
+Two consequences that shaped the code:
+
+- The pause between two words is carried by the **earlier** word's span. Without
+  a cap, a trailing `.` swallows a three-second silence and the segmenter's gap
+  rules never fire again — hence `maxWordMs` (600 ms) in `whisper.ts`.
+- DTW has **no answer** for the very first token of the file, so it falls back to
+  the first segment's `offsets.from`. That is the one place leading silence can
+  still leak in; in the real pipeline VAD trims it first.
+
+### 15.3 The doc's hallucination filter cannot be built as written
+
+§4.4 lists `avg_logprob < -1.0`, `no_speech_prob > 0.6` and
+`compression_ratio > 2.4` as filters. **whisper.cpp's JSON contains none of
+them.** It emits only `timestamps` / `offsets` / `text` per segment, plus (with
+`-ojf`) per-token `id`, `p` and `t_dtw`. Those three fields are Python-`whisper`
+vocabulary, not this engine's.
+
+What is actually available, in order of usefulness:
+
+| Doc's field | Available? | Substitute |
+|---|---|---|
+| repeated-fragment / blacklist | — | unchanged, pure text |
+| `avg_logprob` | no | mean of per-token `p` |
+| `compression_ratio` | no | computable in Node via `zlib` |
+| `no_speech_prob` | **no** | VAD (`--vad`) is the real answer; §4.3 already recommends it |
+
+### 15.4 What was built
+
+| File | What it is | Tests |
+|---|---|---|
+| `lib/lesson/segment.ts` | The sentence re-splitter, doc §4.4 rules 1–6 | 29 |
+| `lib/lesson/whisper.ts` | whisper JSON reader + token→word assembly + DTW timeline | 12 |
+| `scripts/install-tools.mjs` | now also stages whisper.cpp + a model + Silero VAD | — |
+| `scripts/bench-asr.ts` | `npm run bench:asr` — M1's acceptance criterion, executable | — |
+
+`segment.ts` is deliberately a pure function of `CueWord[]`, so it does not care
+which route produced the words. That is what let §9's "decide the route **before**
+writing `segment.ts`" be satisfied without waiting: the schema already had the
+right shape (`CueWord {w,s,e}`), and both a DTW timeline and a forced aligner
+produce it.
+
+Test count went **59 → 100**.
+
+### 15.5 One documented deviation, and the fixture vindicated it
+
+Rule 4 (fold anything under `minDur`/`minWords` into a neighbour) as written
+glues `"Yes."` onto the end of the previous sentence. `keepShortSentences`
+(default on) instead keeps a short chunk that actually terminated.
+
+The end-to-end run justifies it: `"Small talk."` — a 1.06 s, two-word sentence
+that is a real standalone utterance in the source text — survives as its own cue,
+which is exactly what a repeat-listening trainer wants.
+
+### 15.6 Three bugs found by running it, that unit tests did not find
+
+Worth recording, because the pattern is the point: each was invisible to 100
+green unit tests.
+
+1. **The WER scorer was wrong.** It sliced the VTT block from index 1, keeping
+   the timestamp line, so every `00:00:04.763` counted as "reference words".
+   The score read **42.53%**; the true figure is **1.25%**. A wrong measuring
+   instrument is indistinguishable from a wrong implementation.
+2. **`classifyEnding` swallowed a sentence end.** A `^\d+\.$` guard meant to
+   spare numbered-list markers made `"…the streets are after 10."` non-final, so
+   it was glued onto the next sentence. Nothing about "after 10." is a list.
+   Removed; the decimal cases it was protecting (`3.14`, `v2.0`) are already
+   safe because their period is not the last character.
+3. **The special-token regex required a trailing `_`.** `[_BEG_]` matched;
+   `[_TT_242]` did not, so all 44 timestamp tokens leaked into the text.
+
+### 15.7 Reachability, revised
+
+§9's table needs two corrections. Both were found the hard way:
+
+- **`curl` needs `--http1.1` on this machine.** Against `ghfast.top`,
+  `cdn.jsdelivr.net` and `hf-mirror.com`, plain `curl` hangs until timeout; with
+  `--http1.1` all three answer. A HEAD request is also rejected where a ranged
+  GET succeeds, so probe with `-r 0-1023`, never `-I`.
+- **hf-mirror.com stalls mid-transfer.** It served the 82 MB model happily, then
+  died silently at 110 MB of the 856 MB one — connection open, zero bytes/s.
+  Resumable + stall-aborting is required: `curl -C - --speed-time 45
+  --speed-limit 20000 --retry 40 --retry-all-errors`.
+
+Confirmed working (HTTP 206 via ranged GET):
+
+| What | Route |
+|---|---|
+| whisper.cpp binary (CPU) | `ghfast.top/https://github.com/ggerganov/whisper.cpp/releases/download/v1.7.6/whisper-bin-x64.zip` |
+| model weights | `hf-mirror.com/ggerganov/whisper.cpp/resolve/main/<ggml-*.bin>` |
+| **Silero VAD weights** | `hf-mirror.com/ggml-org/whisper-vad/resolve/main/ggml-silero-v5.1.2.bin` |
+| `cdn.jsdelivr.net` | timed out here (worked when measured in §9 — treat as flaky) |
+
+### 15.8 Verification log additions
+
+- `npm run typecheck` — clean
+- `npm test` — **100 passing** (was 59)
+- `npm run bench:asr -- --models base.en-q8_0` — fixture, 7.4 s, 16.6× real time,
+  **WER 1.25%** (5 edits / 401 words), cue-start median **48 ms** / p90 **95 ms**,
+  38 cues vs the reference's 36
+- the 3 "extra" cues are `"Mostly, the weather…"`, `"A sentence I could read in
+  three seconds goes by in one."` and `"Let the sentence finish and then go
+  back."` — all genuine sentences in the source text that the **hand-made VTT had
+  merged**. The count difference is the reference being coarser, not the
+  segmenter being wrong. Worth a human read to confirm.
+- the 5 text edits are `belong→belonged`, `ear→ears`, `stopped→stop`,
+  `so→while`, and `practising→practicing` (a spelling variant, not an error)
+
+**Caveat that matters for M1's acceptance:** this is clean neural TTS with no
+music, noise or accent. It is the easiest possible input, so 1.25% is a
+best case, not an expectation. §16's acceptance bar (3 video types, under 5%)
+still needs real material.
+
+### 15.9 Still open
+
+- **`large-v3-turbo-q8_0` on CPU is unmeasured** (856 MB would not finish
+  downloading). This is the one number that decides whether Vulkan is worth
+  building. `medium.en-q5_0` is a cheaper second data point.
+- **Silero VAD is staged but never exercised.** `--vad -vm` is untested here.
+- **Hallucination filtering is not implemented** — see §15.3 for what is and is
+  not possible.
+- M1 steps 3–5 (embedded-subtitle extraction, job runner + SSE, UI wiring) have
+  not been started. `segment.ts` and `whisper.ts` are the two hardest pieces and
+  they are done and tested.
