@@ -1419,4 +1419,12 @@ instrument before the code.**
   and SSR HTML cannot show them; the evidence is typecheck plus the pure-function
   sweep. Worth a keystroke the next time the player is open.
 
+### Decision (user, 2026-09-24): replay-current-line stays as-is
+
+Asked whether a dedicated "replay this line" key (e.g. `R`) was wanted now that
+`←` always steps back a line. **Answer: no.** Replay keeps its two existing
+affordances — clicking a line in the transcript, and `Repeat → Line`. No new
+key, and `←` stays strictly "previous line". This closes §17; nothing pending
+from the arrow-key work except the human keystroke check above.
+
 
