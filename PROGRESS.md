@@ -3,7 +3,9 @@
 Status log for the English Listening project. Read this first — it is written so
 that a fresh session with no context can pick the work up.
 
-Last updated: 2026-09-24 (M0 complete; fixture re-voiced with neural speech; M1 not started)
+Last updated: 2026-09-24 (M0 complete; fixture re-voiced with neural speech;
+slowed-playback grain diagnosed as the browser's time-stretcher, not a bug — §13;
+M1 not started)
 
 ---
 
@@ -347,6 +349,25 @@ Fixture re-voicing, 2026-09-24 (§12.4):
   `{"sourceFileDeleted": false, "sourcePathKept": "…\\listening-fixture-01.mp4"}`
   — invariant #6 holds on the wire, not just in the source.
 
+Slow-playback grain, 2026-09-24 (§13):
+
+- **A measurement was attempted and abandoned; recorded so it is not retried.**
+  The idea was to score "segmented-ness" as envelope modulation energy in the
+  20–150 Hz band of the 2–5 kHz band, on the fixture stretched with
+  `atempo`/`asetrate` and in nine variants. It does not discriminate: clean
+  unmodified 1.0x material scores **53.4%** and the most heavily stretched
+  material scores **49.9%**, because male voicing puts the fundamental
+  (~110 Hz) squarely inside the measurement band, so the metric is reading
+  voicing rather than seams. An earlier, cruder version of the same idea looked
+  more promising (peaks at 84/112 Hz appearing only on stretched material) but
+  that was the same F0 confusion. **There is no evidence here, and none of it
+  is used in §13.**
+- `ffmpeg -filters` on the vendored build → `atempo` present, **`rubberband`
+  absent**. That is the constraint behind the options table in §13.
+- What §13 actually rests on is the Chromium implementation itself (file and
+  constants quoted there), which is stronger evidence than anything measurable
+  from outside the media stack.
+
 ## 11. Testing
 
 `vitest` was already wired up (`npm test`) but there were **no test files**, so
@@ -496,3 +517,88 @@ files, so the app runs with the network off.
 `lib/lesson/segment.ts` will have to consume. The fixture can now exercise the
 aligner, and act as ground truth to measure an ASR against, *before* any ASR
 exists. Noted in §9.
+
+## 13. Slowed playback sounds "segmented" — diagnosed, not a bug
+
+Reported 2026-09-24, after the re-voicing: *"音频放慢之后，会有断层感…就是感觉会有一节一节的"*
+— explicitly **not** a pitch shift, barely there at 0.7x, and worse the slower
+you go.
+
+**It is Chromium's time-stretcher, not this app.** Nothing in the request path
+is involved: `preservesPitch` is set to `true` in `ControlBar`, `playbackRate` is
+written exactly once per rate change (not per frame), and `usePlaybackClock`
+never seeks on its own during ordinary playback. There is nothing left for us to
+fix at the call site.
+
+### 13.1 Where it comes from
+
+`media/filters/audio_renderer_algorithm.cc` in Chromium. The relevant facts,
+read from the source rather than inferred:
+
+- `FillBufferMode { kPassthrough, kResampler, kWSOLA }`.
+- `ChooseBufferMode()` picks: `kResampler` if `preserves_pitch_` is false, then
+  `kPassthrough` when the rate is ~1.0, and **`kWSOLA` for everything else**.
+- The stretch is a 20 ms overlap-add window (`kOlaWindowSize = 20ms`) advanced by
+  a hop of half that, with a ±15 ms search (`kWsolaSearchInterval = 30ms`) for
+  the block that best continues the waveform.
+- The older header comment is unusually frank — the rate limits come with
+  *"Audio outside of these ranges are muted"* and then this line, about the
+  limits themselves: **"Audio at these speeds would sound better under a
+  frequency domain algorithm."**
+- Chromium commit `ab98b39` (2019, "Use resampler for playback speeds close to
+  1.0") describes the same artifacts in its own words — *"warbling or transient
+  stuttering"* — and switches to plain resampling for rates within 5–6% of 1.0,
+  on the reasoning that inside that window the WSOLA artifacts are worse than a
+  one-semitone pitch shift, and outside it the reverse.
+- MDN, for the generic picture: browsers mute audio outside about 0.5x–4x.
+  Our slowest offered rate is 0.6x, so we sit just above that floor — deep in
+  WSOLA territory, which is exactly where the grain lives.
+
+### 13.2 Why it sounds like discrete chunks
+
+WSOLA stretches by *re-inserting* 20 ms blocks. For each one it hunts ±15 ms for
+the block that best continues the waveform. Speech is close to periodic, so when
+the matcher lands on something that is a whole number of pitch periods away the
+seam is invisible. When it does not, summing the two windows partially cancels
+and leaves a short broadband dip — a notch the width of one window, once per
+iteration. You do not hear a smear, you hear *events*. That is the "一节一节的".
+
+The rate dependence follows directly: at 0.7x roughly 43% of the output is
+inserted material, at 0.6x about 67%, and the number of seams per second rises
+with it. The user's account — ignorable at 0.7x, worse lower down — is the
+predicted shape, and it matches where Chromium's own authors put the boundary.
+
+### 13.3 Why the obvious alternative is worse for this app
+
+`preservesPitch = false` switches Chromium to `kResampler`: completely smooth,
+with no seams at all, but the speech drops in pitch and **its formants move with
+it**, so vowels stop being the vowels. For a listening trainer that is the wrong
+trade — grain is annoying, wrong vowels are misleading. Hence the current
+setting is deliberate, and the honest conclusion is that **~0.7x is the floor**
+of what this playback path can do well.
+
+### 13.4 Options if better slow audio is ever wanted
+
+| Option | Cost | Verdict |
+|---|---|---|
+| `atempo` used offline to pre-render a slowed copy | free | Same family — `atempo` is a time-domain overlap-add algorithm too, so expect the same class of artifact at render time instead of playback time. Also, the vendored ffmpeg has **no `rubberband` filter** (verified with `ffmpeg -filters`), which is the one that is a real phase vocoder. |
+| an ffmpeg build with `librubberband` | medium | The right tool: formant-preserving phase vocoder. Needs a custom build. |
+| a browser-side stretcher (`rubberband-wasm`, SoundTouch in an `AudioWorklet`) | large | Would genuinely fix it, but requires decoding the whole lesson into an `AudioBuffer` and driving playback from Web Audio: memory scales with lesson length (~1 GB for a 45-minute stereo lesson), and it **inverts invariant #4** — audio would become the master clock and the video would have to follow. A project, not a patch. |
+| drop to `preservesPitch = false` below some rate | trivial | Rejected — §13.3. |
+
+**Recommendation, unbuilt:** for the comprehension problem that slow playback is
+trying to solve, repetition beats speed. `Repeat Line` / `×N` / `Pause after
+line` already exist, so a "slow practice" preset of ~0.8x with 3 repeats gets
+most of the benefit while staying in the region where WSOLA is clean. Offered,
+not assumed.
+
+### 13.5 Also considered and dropped
+
+The fixture's source audio is a **48 kbps MP3** (`OUTPUT_FORMAT` in
+`scripts/make-fixture.mjs`), and one might expect low-bitrate source material to
+make a stretcher's alignment search less reliable, amplifying the grain.
+Measuring that failed for the same reason as in §10, so it is unresolved and
+**the fixture was deliberately not regenerated on a hunch** — it currently
+sounds good at 1x and churning it would cost a re-listen for no demonstrated
+gain. If it is ever regenerated for another reason, the enum also offers
+`AUDIO_24KHZ_96KBITRATE_MONO_MP3` and `WEBM_24KHZ_16BIT_MONO_OPUS`.

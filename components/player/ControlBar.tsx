@@ -121,8 +121,21 @@ export function ControlBar({
     }
   }, [videoRef])
 
-  // Rate and volume; keep the pitch intact so slow playback does not turn into
-  // a demon voice.
+  // Rate and volume.
+  //
+  // `preservesPitch` is the whole decision here, and it has two horns:
+  //
+  //   true  — Chromium time-stretches with WSOLA. The pitch survives, but the
+  //           stretch works by re-inserting 20 ms blocks, and every seam the
+  //           matcher gets wrong is a short broadband notch. You hear those as
+  //           discrete events — "one chunk at a time" — and the effect grows
+  //           the slower you go.
+  //   false — Chromium resamples instead. Perfectly smooth, but the speech
+  //           drops in pitch and its formants move with it, so vowels stop
+  //           being the right vowels. Fatal for a listening trainer.
+  //
+  // So: true, and treat ~0.7x as the practical floor rather than trying to
+  // fight the engine. The reasoning is in PROGRESS.md §13.
   useEffect(() => {
     const video = videoRef.current
     if (!video) return
