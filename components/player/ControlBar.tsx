@@ -41,7 +41,7 @@ function IconButton({
       title={label}
       aria-label={label}
       disabled={disabled}
-      className="inline-flex size-8 items-center justify-center rounded-md text-ink-300 transition-colors hover:bg-ink-800 hover:text-ink-100 disabled:opacity-40 disabled:hover:bg-transparent"
+      className="inline-flex size-8 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-sunken hover:text-ink disabled:opacity-40 disabled:hover:bg-transparent"
     >
       {children}
     </button>
@@ -275,7 +275,7 @@ export function ControlBar({
   }, [fullscreenContainerRef])
 
   return (
-    <div className="border-t border-ink-800 bg-ink-900 px-3 py-2">
+    <div className="border-t border-line bg-surface px-3 py-2">
       <div
         ref={trackRef}
         onPointerDown={onTrackPointerDown}
@@ -289,12 +289,15 @@ export function ControlBar({
         aria-valuemax={Math.round(durationMs / 1000)}
         aria-valuenow={0}
       >
-        <div className="h-1 w-full rounded-full bg-ink-700">
-          <div ref={fillRef} className="h-1 rounded-full bg-accent-500" style={{ width: '0%' }} />
+        <div className="h-1.5 w-full rounded-full bg-line-strong">
+          <div ref={fillRef} className="h-full rounded-full bg-accent" style={{ width: '0%' }} />
         </div>
+        {/* Always visible, not hover-revealed: on a light track the handle is the
+            only thing that says "this is draggable". The ring is what separates
+            it from the fill it sits on top of. */}
         <div
           ref={thumbRef}
-          className="pointer-events-none absolute top-1/2 size-3 -translate-x-1/2 -translate-y-1/2 rounded-full bg-accent-400 opacity-0 transition-opacity group-hover:opacity-100"
+          className="pointer-events-none absolute top-1/2 size-3.5 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-surface bg-accent shadow-sm"
           style={{ left: '0%' }}
         />
       </div>
@@ -339,18 +342,18 @@ export function ControlBar({
           </svg>
         </IconButton>
 
-        <span className="ml-1 font-mono text-[11px] tabular-nums text-ink-300">
+        <span className="ml-1 font-mono text-[11px] tabular-nums text-ink">
           <span ref={currentLabelRef}>00:00</span>
-          <span className="text-ink-500"> / {formatClock(durationMs)}</span>
+          <span className="text-ink-faint"> / {formatClock(durationMs)}</span>
         </span>
 
         <div className="ml-auto flex items-center gap-2">
-          <label className="flex items-center gap-1 text-[11px] text-ink-400">
+          <label className="flex items-center gap-1 text-[11px] text-ink-muted">
             <span className="sr-only">Playback speed</span>
             <select
               value={rate}
               onChange={(event) => setRate(Number(event.target.value))}
-              className="rounded-md border border-ink-700 bg-ink-850 px-1.5 py-1 text-[11px] text-ink-200 outline-none hover:border-ink-600"
+              className="rounded-md border border-line-strong bg-sunken px-1.5 py-1 text-[11px] text-ink-soft outline-none transition-colors hover:bg-raised"
             >
               {PLAYBACK_RATES.map((value) => (
                 <option key={value} value={value}>
@@ -382,7 +385,7 @@ export function ControlBar({
               value={muted ? 0 : volume}
               onChange={(event) => setVolume(Number(event.target.value))}
               aria-label="Volume"
-              className="h-1 w-20 accent-accent-500"
+              className="h-1 w-20 accent-accent"
             />
           </div>
 

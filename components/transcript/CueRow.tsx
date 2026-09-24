@@ -30,14 +30,18 @@ function CueRowComponent({ cue, index, isActive, onSelect, onRegister }: CueRowP
       className={[
         'group relative flex cursor-pointer gap-3 border-l-2 py-2 pl-3 pr-4 transition-colors',
         isActive
-          ? 'border-accent-500 bg-ink-800'
-          : 'border-transparent hover:border-ink-600 hover:bg-ink-850',
+          ? // Teal wash, not a grey step: on a light theme a subtle grey is not
+            // readable as "this is the line you are hearing". The wash is also
+            // deliberately lighter than the hover state's tint, so hover and
+            // active can never be confused with each other.
+            'animate-cue-activate border-accent bg-accent-wash'
+          : 'border-transparent hover:border-line-strong hover:bg-sunken',
       ].join(' ')}
     >
       <span
         className={[
           'mt-[3px] w-11 shrink-0 select-none font-mono text-[11px] tabular-nums',
-          isActive ? 'text-accent-400' : 'text-ink-500 group-hover:text-ink-400',
+          isActive ? 'text-accent-strong' : 'text-ink-faint group-hover:text-ink-muted',
         ].join(' ')}
       >
         {formatClock(cue.start)}
@@ -46,7 +50,7 @@ function CueRowComponent({ cue, index, isActive, onSelect, onRegister }: CueRowP
       <p
         className={[
           'flex-1 text-[15px] leading-relaxed',
-          isActive ? 'text-ink-100' : 'text-ink-400 group-hover:text-ink-200',
+          isActive ? 'text-ink' : 'text-ink-muted group-hover:text-ink-soft',
         ].join(' ')}
       >
         {cue.text}

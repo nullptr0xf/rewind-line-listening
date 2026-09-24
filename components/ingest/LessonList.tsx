@@ -53,9 +53,9 @@ export function LessonList({ lessons, onChanged }: LessonListProps) {
 
   if (lessons.length === 0) {
     return (
-      <p className="rounded-lg border border-dashed border-ink-800 px-4 py-8 text-center text-xs text-ink-500">
+      <p className="rounded-xl border border-dashed border-line-strong px-4 py-10 text-center text-xs text-ink-muted">
         Nothing imported yet. Add a file above, or run{' '}
-        <code className="text-ink-400">npm run ingest -- &quot;&lt;path&gt;&quot;</code> from the
+        <code className="text-ink-soft">npm run ingest -- &quot;&lt;path&gt;&quot;</code> from the
         command line.
       </p>
     )
@@ -66,24 +66,24 @@ export function LessonList({ lessons, onChanged }: LessonListProps) {
       {lessons.map((lesson) => (
         <li
           key={lesson.id}
-          className="group flex items-center gap-4 rounded-lg border border-ink-800 bg-ink-900 px-4 py-3 transition-colors hover:border-ink-700"
+          className="group flex items-center gap-4 rounded-xl border border-line bg-surface px-4 py-3 shadow-sm transition-all hover:border-line-strong hover:shadow-md"
         >
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
               <Link
                 href={`/watch/${encodeURIComponent(lesson.id)}`}
-                className="truncate text-sm font-medium text-ink-100 transition-colors hover:text-accent-400"
+                className="truncate text-sm font-medium text-ink transition-colors hover:text-accent-strong"
               >
                 {lesson.title}
               </Link>
               {lesson.missingSince ? (
-                <span className="shrink-0 rounded border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-300">
+                <span className="shrink-0 rounded border border-amber-600/30 bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-800">
                   source missing
                 </span>
               ) : null}
             </div>
 
-            <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-ink-500">
+            <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-ink-muted">
               <span className="font-mono tabular-nums">
                 {lesson.durationMs ? formatClock(lesson.durationMs) : '--:--'}
               </span>
@@ -92,18 +92,18 @@ export function LessonList({ lessons, onChanged }: LessonListProps) {
                 {lesson.cueCount > 0 ? `${lesson.cueCount} lines` : 'no transcript'}
               </span>
               {lesson.lastPositionMs > 0 ? (
-                <span className="text-ink-600">resume at {formatClock(lesson.lastPositionMs)}</span>
+                <span className="text-ink-faint">resume at {formatClock(lesson.lastPositionMs)}</span>
               ) : null}
             </div>
 
-            <p className="mt-0.5 truncate font-mono text-[10px] text-ink-600">{lesson.sourcePath}</p>
+            <p className="mt-0.5 truncate font-mono text-[10px] text-ink-faint">{lesson.sourcePath}</p>
           </div>
 
           <button
             type="button"
             onClick={() => remove(lesson)}
             disabled={pendingId === lesson.id}
-            className="shrink-0 rounded-md border border-ink-700 px-2.5 py-1 text-[11px] text-ink-400 opacity-0 transition-all hover:border-ink-600 hover:text-ink-200 group-hover:opacity-100 disabled:opacity-40"
+            className="shrink-0 rounded-md border border-line-strong px-2.5 py-1 text-[11px] text-ink-muted opacity-0 transition-all hover:border-red-300 hover:bg-red-50 hover:text-red-700 group-hover:opacity-100 disabled:opacity-40"
           >
             {pendingId === lesson.id ? 'Removing…' : 'Remove'}
           </button>

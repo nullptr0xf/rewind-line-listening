@@ -218,26 +218,27 @@ export function WatchScreen({ lesson, summary }: WatchScreenProps) {
 
   return (
     <div className="flex h-screen flex-col">
-      <header className="flex h-12 shrink-0 items-center gap-3 border-b border-ink-800 bg-ink-900 px-4">
+      <header className="flex h-12 shrink-0 items-center gap-3 border-b border-line bg-surface px-4">
         <Link
           href="/"
-          className="text-xs text-ink-400 transition-colors hover:text-ink-100"
+          className="text-xs text-ink-muted transition-colors hover:text-ink"
         >
           Library
         </Link>
-        <span className="text-ink-700">/</span>
-        <h1 className="truncate text-sm font-medium text-ink-100">{summary.title}</h1>
-        <span className="ml-auto shrink-0 font-mono text-[11px] text-ink-500">
+        <span className="text-ink-faint">/</span>
+        <h1 className="truncate text-sm font-medium text-ink">{summary.title}</h1>
+        <span className="ml-auto shrink-0 font-mono text-[11px] text-ink-muted">
           {cues.length} lines
         </span>
       </header>
 
       <div className="flex min-h-0 flex-1">
         {/* LEFT: picture + transport */}
-        <div ref={playerShellRef} className="flex min-w-0 flex-1 flex-col bg-ink-950">
+        <div ref={playerShellRef} className="flex min-w-0 flex-1 flex-col bg-canvas">
           <VideoPane
             videoRef={videoRef}
             src={`/api/media/${encodeURIComponent(lesson.video.id)}`}
+            title={summary.title}
             missingSince={lesson.video.missingSince}
             onLoadedMetadata={handleLoadedMetadata}
           />
@@ -251,7 +252,7 @@ export function WatchScreen({ lesson, summary }: WatchScreenProps) {
         </div>
 
         {/* RIGHT: transcript + practice controls */}
-        <aside className="flex w-[42%] min-w-[340px] max-w-[640px] shrink-0 flex-col border-l border-ink-800 bg-ink-900">
+        <aside className="flex w-[42%] min-w-[340px] max-w-[640px] shrink-0 flex-col border-l border-line bg-surface">
           <PracticeBar
             loopMode={loopMode}
             loopCount={loopCount}
@@ -308,22 +309,23 @@ function PracticeBar({
   onPauseDurationMs,
 }: PracticeBarProps) {
   return (
-    <div className="shrink-0 border-b border-ink-800 px-3 py-2">
+    <div className="shrink-0 border-b border-line px-3 py-2">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         <div className="flex items-center gap-1.5">
-          <span className="text-[11px] text-ink-500">Repeat</span>
-          <div className="flex overflow-hidden rounded-md border border-ink-700">
+          <span className="text-[11px] text-ink-muted">Repeat</span>
+          <div className="flex overflow-hidden rounded-md border border-line-strong bg-surface">
             {LOOP_OPTIONS.map((option) => (
               <button
                 key={option.value}
                 type="button"
                 title={option.hint}
+                aria-pressed={loopMode === option.value}
                 onClick={() => onLoopMode(option.value)}
                 className={[
                   'px-2 py-1 text-[11px] transition-colors',
                   loopMode === option.value
-                    ? 'bg-accent-600 text-white'
-                    : 'bg-ink-850 text-ink-300 hover:bg-ink-800 hover:text-ink-100',
+                    ? 'bg-accent-strong font-medium text-white'
+                    : 'bg-transparent text-ink-soft hover:bg-raised hover:text-ink',
                 ].join(' ')}
               >
                 {option.label}
@@ -338,38 +340,38 @@ function PracticeBar({
               value={loopCount}
               onChange={(event) => onLoopCount(Math.max(1, Math.min(20, Number(event.target.value) || 1)))}
               aria-label="Repeat count"
-              className="w-12 rounded-md border border-ink-700 bg-ink-850 px-1.5 py-0.5 text-[11px] text-ink-200 outline-none focus:border-ink-500"
+              className="w-12 rounded-md border border-line-strong bg-sunken px-1.5 py-0.5 text-[11px] text-ink-soft outline-none focus:border-accent"
             />
           ) : null}
         </div>
 
-        <label className="flex cursor-pointer items-center gap-1.5 text-[11px] text-ink-400">
+        <label className="flex cursor-pointer items-center gap-1.5 text-[11px] text-ink-muted">
           <input
             type="checkbox"
             checked={autoPlayOnJump}
             onChange={(event) => onAutoPlayOnJump(event.target.checked)}
-            className="size-3.5 accent-accent-500"
+            className="size-3.5 accent-accent"
           />
           Play on click
         </label>
 
-        <label className="flex cursor-pointer items-center gap-1.5 text-[11px] text-ink-400">
+        <label className="flex cursor-pointer items-center gap-1.5 text-[11px] text-ink-muted">
           <input
             type="checkbox"
             checked={pauseAfterLine}
             onChange={(event) => onPauseAfterLine(event.target.checked)}
-            className="size-3.5 accent-accent-500"
+            className="size-3.5 accent-accent"
           />
           Pause after line
         </label>
 
         {pauseAfterLine ? (
-          <label className="flex items-center gap-1.5 text-[11px] text-ink-400">
+          <label className="flex items-center gap-1.5 text-[11px] text-ink-muted">
             <select
               value={pauseDurationMs}
               onChange={(event) => onPauseDurationMs(Number(event.target.value))}
               aria-label="Pause duration"
-              className="rounded-md border border-ink-700 bg-ink-850 px-1.5 py-0.5 text-[11px] text-ink-200 outline-none"
+              className="rounded-md border border-line-strong bg-sunken px-1.5 py-0.5 text-[11px] text-ink-soft outline-none"
             >
               {[500, 1000, 1500, 2000, 3000, 5000].map((value) => (
                 <option key={value} value={value}>

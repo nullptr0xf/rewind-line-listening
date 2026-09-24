@@ -98,13 +98,13 @@ export function ImportPanel({ onImported }: ImportPanelProps) {
   )
 
   return (
-    <form onSubmit={submit} className="rounded-lg border border-ink-800 bg-ink-900 p-4">
-      <label htmlFor="import-path" className="block text-xs font-medium text-ink-300">
+    <form onSubmit={submit} className="rounded-xl border border-line bg-surface p-4 shadow-sm">
+      <label htmlFor="import-path" className="block text-xs font-medium text-ink-soft">
         Import a video or audio file
       </label>
-      <p className="mt-1 text-[11px] leading-relaxed text-ink-500">
+      <p className="mt-1 text-[11px] leading-relaxed text-ink-muted">
         Paste an absolute path, or use Browse to pick one. A matching{' '}
-        <code className="text-ink-400">.srt</code> / <code className="text-ink-400">.vtt</code> file
+        <code className="text-ink-muted">.srt</code> / <code className="text-ink-muted">.vtt</code> file
         sitting next to the video is picked up automatically. Your file is read in place and never
         copied or modified.
       </p>
@@ -116,57 +116,57 @@ export function ImportPanel({ onImported }: ImportPanelProps) {
           onChange={(event) => setPath(event.target.value)}
           placeholder="F:\videos\ep01.mp4"
           spellCheck={false}
-          className="min-w-0 flex-1 rounded-md border border-ink-700 bg-ink-950 px-3 py-2 font-mono text-xs text-ink-100 outline-none placeholder:text-ink-600 focus:border-ink-500"
+          className="min-w-0 flex-1 rounded-md border border-line-strong bg-canvas px-3 py-2 font-mono text-xs text-ink outline-none placeholder:text-ink-faint focus:border-accent"
         />
         <button
           type="button"
           onClick={browse}
           disabled={busy !== null}
-          className="shrink-0 rounded-md border border-ink-700 bg-ink-850 px-3 py-2 text-xs text-ink-200 transition-colors hover:border-ink-600 hover:text-ink-100 disabled:opacity-50"
+          className="shrink-0 rounded-md border border-line-strong bg-sunken px-3 py-2 text-xs text-ink-soft transition-colors hover:bg-raised hover:text-ink disabled:opacity-50"
         >
           {busy === 'browsing' ? 'Waiting…' : 'Browse…'}
         </button>
         <button
           type="submit"
           disabled={busy !== null || path.trim().length === 0}
-          className="shrink-0 rounded-md bg-accent-600 px-4 py-2 text-xs font-medium text-white transition-colors hover:bg-accent-500 disabled:opacity-40"
+          className="shrink-0 rounded-md bg-accent-strong px-4 py-2 text-xs font-medium text-white transition-colors hover:bg-accent disabled:opacity-40"
         >
           {busy === 'importing' ? 'Importing…' : 'Import'}
         </button>
       </div>
 
       {error ? (
-        <p className="mt-3 rounded-md border border-ink-700 bg-ink-850 px-3 py-2 text-[11px] leading-relaxed text-red-300">
+        <p className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-[11px] leading-relaxed text-red-700">
           {error}
         </p>
       ) : null}
 
       {dialogClosedEmpty ? (
-        <p className="mt-3 rounded-md border border-ink-700 bg-ink-850 px-3 py-2 text-[11px] leading-relaxed text-ink-400">
+        <p className="mt-3 rounded-md border border-line bg-sunken px-3 py-2 text-[11px] leading-relaxed text-ink-muted">
           The file dialog closed without a selection. Nothing was imported. If no dialog appeared
           at all, paste the path into the field above instead.
         </p>
       ) : null}
 
       {report ? (
-        <div className="mt-3 rounded-md border border-ink-700 bg-ink-850 px-3 py-2">
-          <p className="text-[11px] text-ink-200">
+        <div className="mt-3 rounded-md border border-accent-line bg-accent-wash px-3 py-2">
+          <p className="text-[11px] text-ink-soft">
             {report.reused ? 'Already in the library — reusing it.' : 'Imported.'}{' '}
-            <span className="text-ink-400">
+            <span className="text-ink-muted">
               {report.cueCount > 0
                 ? `${report.cueCount} lines from ${report.transcriptSource}`
                 : 'No transcript found yet'}
             </span>
           </p>
           {report.transcriptPath ? (
-            <p className="mt-1 truncate font-mono text-[10px] text-ink-500">
+            <p className="mt-1 truncate font-mono text-[10px] text-ink-muted">
               {report.transcriptPath}
             </p>
           ) : null}
           {report.warnings.length > 0 ? (
             <ul className="mt-2 space-y-1">
               {report.warnings.map((warning) => (
-                <li key={warning} className="text-[11px] leading-relaxed text-amber-300/90">
+                <li key={warning} className="text-[11px] leading-relaxed text-amber-800">
                   {warning}
                 </li>
               ))}

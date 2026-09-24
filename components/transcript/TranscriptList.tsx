@@ -37,10 +37,10 @@ export function TranscriptList({ cues, activeIndex, autoScroll, onSelect }: Tran
       >
         {cues.length === 0 ? (
           <div className="px-6 py-10 text-center">
-            <p className="text-sm font-medium text-ink-200">No transcript yet</p>
-            <p className="mx-auto mt-2 max-w-xs text-xs leading-relaxed text-ink-500">
-              This lesson has no lines. Put a matching <code className="text-ink-300">.srt</code> or{' '}
-              <code className="text-ink-300">.vtt</code> file next to the video and import it again,
+            <p className="text-sm font-medium text-ink-soft">No transcript yet</p>
+            <p className="mx-auto mt-2 max-w-xs text-xs leading-relaxed text-ink-muted">
+              This lesson has no lines. Put a matching <code className="text-ink-soft">.srt</code> or{' '}
+              <code className="text-ink-soft">.vtt</code> file next to the video and import it again,
               or transcribe it in M1.
             </p>
           </div>
@@ -64,7 +64,7 @@ export function TranscriptList({ cues, activeIndex, autoScroll, onSelect }: Tran
         <button
           type="button"
           onClick={resumeFollow}
-          className="animate-cue-pop absolute bottom-4 left-1/2 rounded-full border border-ink-600 bg-ink-800 px-3 py-1.5 text-[11px] font-medium text-ink-200 shadow-lg transition-colors hover:border-ink-500 hover:text-ink-100"
+          className="animate-cue-pop absolute bottom-4 left-1/2 rounded-full border border-accent-line bg-surface px-3.5 py-1.5 text-[11px] font-medium text-accent-strong shadow-lg shadow-accent/15 transition-colors hover:bg-accent-wash"
         >
           Back to current line
         </button>
