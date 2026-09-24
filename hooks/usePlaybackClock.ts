@@ -175,7 +175,10 @@ export function usePlaybackClock(
   const getTimeMs = useCallback(() => timeMsRef.current, [])
 
   const requestSync = useCallback(() => {
-    emit(videoRef.current?.currentTime ? videoRef.current.currentTime * 1000 : timeMsRef.current)
+    const video = videoRef.current
+    // Test for the element, not for a truthy number: a seek to exactly 0 is a
+    // valid position, and `currentTime ? ... : ...` would report the stale one.
+    emit(video ? video.currentTime * 1000 : timeMsRef.current)
   }, [videoRef, emit])
 
   return { subscribe, getTimeMs, activeIndex, requestSync }

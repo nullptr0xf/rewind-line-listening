@@ -71,6 +71,8 @@ export function ControlBar({
   const currentLabelRef = useRef<HTMLSpanElement | null>(null)
   const scrubbingRef = useRef(false)
   const lastShownSecondRef = useRef(-1)
+  const pendingSeekRef = useRef<number | null>(null)
+  const seekFrameRef = useRef(0)
 
   const paint = useCallback((timeMs: number) => {
     const duration = videoRef.current?.duration ?? 0
@@ -79,9 +81,12 @@ export function ControlBar({
     if (thumbRef.current) thumbRef.current.style.left = `${ratio * 100}%`
 
     const seconds = Math.floor(timeMs / 1000)
-    if (seconds !== lastShownSecondRef.current && currentLabelRef.current) {
+    if (seconds !== lastShownSecondRef.current) {
       lastShownSecondRef.current = seconds
-      currentLabelRef.current.textContent = formatClock(timeMs)
+      if (currentLabelRef.current) currentLabelRef.current.textContent = formatClock(timeMs)
+      // Kept in step with the painted position; a slider role that always
+      // reports 0 is worse than no slider role at all.
+      trackRef.current?.setAttribute('aria-valuenow', String(seconds))
     }
   }, [videoRef])
 
@@ -141,14 +146,64 @@ export function ControlBar({
     else video.pause()
   }, [videoRef])
 
+  /**
+   * The one place that actually moves the playhead.
+   *
+   * Everything that seeks goes through here. The drag path used to call
+   * `paint()` only — it repainted the bar without touching `currentTime`, so
+   * the bar sprang straight back to wherever the video really was. That is the
+   * "dragging does nothing" bug.
+   */
+  const commitSeek = useCallback(
+    (timeMs: number) => {
+      const video = videoRef.current
+      if (!video) return
+      const durationMs = (video.duration || 0) * 1000
+      video.currentTime = Math.max(0, Math.min(durationMs, timeMs)) / 1000
+    },
+    [videoRef],
+  )
+
+  // A pointermove can fire far faster than the decoder can settle a seek, and
+  // flooding `currentTime` with writes makes scrubbing stutter rather than
+  // improve. Coalesce to at most one seek per frame, always the newest value.
+  const queueSeek = useCallback(
+    (timeMs: number) => {
+      pendingSeekRef.current = timeMs
+      if (seekFrameRef.current) return
+      seekFrameRef.current = requestAnimationFrame(() => {
+        seekFrameRef.current = 0
+        const pending = pendingSeekRef.current
+        pendingSeekRef.current = null
+        if (pending !== null) commitSeek(pending)
+      })
+    },
+    [commitSeek],
+  )
+
+  const flushSeek = useCallback(() => {
+    if (seekFrameRef.current) {
+      cancelAnimationFrame(seekFrameRef.current)
+      seekFrameRef.current = 0
+    }
+    const pending = pendingSeekRef.current
+    pendingSeekRef.current = null
+    if (pending !== null) commitSeek(pending)
+  }, [commitSeek])
+
+  useEffect(() => {
+    return () => {
+      if (seekFrameRef.current) cancelAnimationFrame(seekFrameRef.current)
+    }
+  }, [])
+
   const seekBy = useCallback(
     (deltaMs: number) => {
       const video = videoRef.current
       if (!video) return
-      const next = Math.max(0, Math.min(video.duration || 0, video.currentTime + deltaMs / 1000))
-      video.currentTime = next
+      commitSeek(video.currentTime * 1000 + deltaMs)
     },
-    [videoRef],
+    [commitSeek, videoRef],
   )
 
   const timeFromClientX = useCallback(
@@ -166,15 +221,15 @@ export function ControlBar({
 
   const onTrackPointerDown = useCallback(
     (event: React.PointerEvent<HTMLDivElement>) => {
-      const video = videoRef.current
       const timeMs = timeFromClientX(event.clientX)
-      if (!video || timeMs === null) return
+      if (timeMs === null) return
       event.currentTarget.setPointerCapture(event.pointerId)
       scrubbingRef.current = true
       paint(timeMs)
-      video.currentTime = timeMs / 1000
+      // Commit straight away so a plain click lands without waiting for a frame.
+      commitSeek(timeMs)
     },
-    [paint, timeFromClientX, videoRef],
+    [commitSeek, paint, timeFromClientX],
   )
 
   const onTrackPointerMove = useCallback(
@@ -183,17 +238,20 @@ export function ControlBar({
       const timeMs = timeFromClientX(event.clientX)
       if (timeMs === null) return
       paint(timeMs)
+      queueSeek(timeMs)
     },
-    [paint, timeFromClientX],
+    [paint, queueSeek, timeFromClientX],
   )
 
   const onTrackPointerUp = useCallback(
     (event: React.PointerEvent<HTMLDivElement>) => {
       if (!scrubbingRef.current) return
       scrubbingRef.current = false
+      // Land on the exact release position, not on whatever the last frame saw.
+      flushSeek()
       event.currentTarget.releasePointerCapture(event.pointerId)
     },
-    [],
+    [flushSeek],
   )
 
   const toggleFullscreen = useCallback(() => {
