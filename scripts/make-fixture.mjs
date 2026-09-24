@@ -27,8 +27,12 @@
  *   <name>.mp4   video + audio, deliberately 1-second keyframes
  *   <name>.vtt   sidecar subtitle, auto-discovered on import
  *
- * The video is only a burnt-in frame counter, on purpose: you can see the
- * timestamp the player thinks it is at, which makes seek behaviour obvious.
+ * The picture is deliberate and it is not decoration: a soft "ruled paper"
+ * background with the **actual audio** drawn across it as a scrolling waveform.
+ * That makes the frame informative in exactly the way a listening trainer needs
+ * — you can see speech begin and end, see the pauses between sentences, and
+ * confirm that seeking landed where you meant. The old `testsrc` pattern read as
+ * "no signal", which is the one thing a picture must never say here.
  *
  * Usage:
  *   npm run fixture
@@ -45,6 +49,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
+import zlib from 'node:zlib'
 
 const require = createRequire(import.meta.url)
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -505,27 +510,185 @@ function probeDurationMs(filePath) {
   return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : null
 }
 
-function mux(audioPath, outPath, options) {
+// ---------------------------------------------------------------------------
+// the picture: ruled paper + the audio's own waveform
+// ---------------------------------------------------------------------------
+
+const FRAME_W = 1280
+const FRAME_H = 720
+const WAVE_H = 240
+// Centred, so the wave's zero line sits exactly on the strong rule.
+const WAVE_TOP = Math.round((FRAME_H - WAVE_H) / 2)
+const WAVE_COLOUR = '0x0d9488' // the app's --color-accent
+const WAVE_ALPHA = 0.6
+
+// Fonts we can name directly. drawtext wants a file, and fontconfig is not
+// something this 2018 build can be relied on to consult.
+const CAPTION_FONTS = [
+  'C:/Windows/Fonts/segoeui.ttf',
+  'C:/Windows/Fonts/arial.ttf',
+]
+
+function crc32(buf) {
+  if (typeof zlib.crc32 === 'function') return zlib.crc32(buf) >>> 0
+  let table = crc32.table
+  if (!table) {
+    table = crc32.table = new Int32Array(256)
+    for (let n = 0; n < 256; n += 1) {
+      let c = n
+      for (let k = 0; k < 8; k += 1) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1
+      table[n] = c
+    }
+  }
+  let c = 0xffffffff
+  for (let i = 0; i < buf.length; i += 1) c = table[(c ^ buf[i]) & 0xff] ^ (c >>> 8)
+  return (c ^ 0xffffffff) >>> 0
+}
+
+function pngChunk(type, data) {
+  const length = Buffer.alloc(4)
+  length.writeUInt32BE(data.length)
+  const body = Buffer.concat([Buffer.from(type, 'ascii'), data])
+  const crc = Buffer.alloc(4)
+  crc.writeUInt32BE(crc32(body))
+  return Buffer.concat([length, body, crc])
+}
+
+function writePng(filePath, rgb, width, height) {
+  const ihdr = Buffer.alloc(13)
+  ihdr.writeUInt32BE(width, 0)
+  ihdr.writeUInt32BE(height, 4)
+  ihdr[8] = 8 // bit depth
+  ihdr[9] = 2 // colour type: truecolour
+
+  const stride = width * 3 + 1
+  const raw = Buffer.alloc(stride * height)
+  for (let y = 0; y < height; y += 1) {
+    raw[y * stride] = 0 // filter: none
+    rgb.copy(raw, y * stride + 1, y * width * 3, (y + 1) * width * 3)
+  }
+
+  fs.writeFileSync(
+    filePath,
+    Buffer.concat([
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      pngChunk('IHDR', ihdr),
+      pngChunk('IDAT', zlib.deflateSync(raw, { level: 9 })),
+      pngChunk('IEND', Buffer.alloc(0)),
+    ]),
+  )
+}
+
+function lerp(a, b, t) {
+  return a + (b - a) * t
+}
+
+/**
+ * The background: a mint "ruled paper" wash, drawn per pixel into a PNG.
+ *
+ * Two things this does NOT do, on purpose. It does not put text or progress in
+ * the frame — the transcript panel is the reading surface and the transport is
+ * the progress indicator; duplicating either on the picture is noise. And it
+ * does not animate: the waveform over it is the only motion, and that one is
+ * honest, because it is the audio itself.
+ */
+function makeBackground(filePath) {
+  const px = Buffer.alloc(FRAME_W * FRAME_H * 3)
+  // The strong rule is the wave's zero line; the faint ones frame its band.
+  const rules = [
+    { y: WAVE_TOP - 4, c: [186, 214, 207], a: 0.55 },
+    { y: WAVE_TOP + WAVE_H / 2, c: [168, 204, 196], a: 0.9 },
+    { y: WAVE_TOP + WAVE_H + 4, c: [186, 214, 207], a: 0.55 },
+  ]
+  const glow = { x: 1010, y: 150, r: 620 }
+
+  for (let y = 0; y < FRAME_H; y += 1) {
+    const t = y / (FRAME_H - 1)
+    const baseR = lerp(243, 226, t)
+    const baseG = lerp(249, 240, t)
+    const baseB = lerp(246, 236, t)
+
+    for (let x = 0; x < FRAME_W; x += 1) {
+      const dx = (x - glow.x) / glow.r
+      const dy = (y - glow.y) / glow.r
+      const falloff = Math.max(0, 1 - (dx * dx + dy * dy)) ** 2
+      // Blend TOWARD white rather than adding to the channels. These values are
+      // already in the high 240s; adding wraps them around 256, which painted a
+      // magenta ring across the first prototype. Blending cannot overflow.
+      let r = lerp(baseR, 255, falloff * 0.45)
+      let g = lerp(baseG, 255, falloff * 0.45)
+      let b = lerp(baseB, 255, falloff * 0.45)
+
+      for (const rule of rules) {
+        const dist = Math.abs(y - rule.y)
+        if (dist <= 1) {
+          const k = rule.a * (1 - dist * 0.5)
+          r = lerp(r, rule.c[0], k)
+          g = lerp(g, rule.c[1], k)
+          b = lerp(b, rule.c[2], k)
+        }
+      }
+
+      const i = (y * FRAME_W + x) * 3
+      px[i] = r
+      px[i + 1] = g
+      px[i + 2] = b
+    }
+  }
+
+  writePng(filePath, px, FRAME_W, FRAME_H)
+}
+
+/** drawtext's filter string has its own escaping rules; sidestep them. */
+function captionSafe(text) {
+  return text.replace(/[^A-Za-z0-9 ._-]/g, '-').replace(/\s+/g, ' ').trim()
+}
+
+function mux(audioPath, outPath, options, backgroundPath) {
   // Total length is computed rather than asked for, because `apad` lengths its
   // pad by sample count on older builds (`pad_dur` does not exist yet), so the
   // pad is left open-ended and the output is cut with -t instead.
   const sourceMs = probeDurationMs(audioPath)
   const totalMs = sourceMs === null ? null : sourceMs + options.leadInMs + options.tailMs
 
-  const filters = []
-  if (options.leadInMs > 0) filters.push(`adelay=${options.leadInMs}`)
-  if (options.tailMs > 0 && totalMs !== null) filters.push('apad')
+  const audioChain = []
+  if (options.leadInMs > 0) audioChain.push(`adelay=${options.leadInMs}`)
+  if (options.tailMs > 0 && totalMs !== null) audioChain.push('apad')
+  const padPrefix = audioChain.length ? audioChain.join(',') + ',' : ''
+
+  // One audio chain, split two ways: [af] becomes the file's own audio track,
+  // [aw] feeds the waveform so the picture and the sound can never disagree.
+  // The caption is drawn inside this graph, not via -vf: ffmpeg refuses a
+  // -filter option on a stream that a complex filtergraph is already feeding.
+  const caption = captionSafe(
+    `${options.name} — ${options.tts === 'edge' ? options.voice : 'eSpeak NG (offline)'}`,
+  )
+  const font = CAPTION_FONTS.find((candidate) => fs.existsSync(candidate))
+  const withCaption = Boolean(font)
+  const tail = withCaption ? '[ovl]' : '[v]'
+
+  const graph =
+    `[1:a]${padPrefix}asplit=2[af][aw];` +
+    `[aw]showwaves=s=${FRAME_W}x${WAVE_H}:mode=cline:rate=25:colors=${WAVE_COLOUR},` +
+    `format=rgba,colorchannelmixer=aa=${WAVE_ALPHA}[wv];` +
+    `[0:v][wv]overlay=0:${WAVE_TOP}:shortest=1${tail}` +
+    (withCaption
+      ? `;[ovl]drawtext=fontfile=${font.replace(/:/g, '\\:')}:text='${caption}':` +
+        `fontsize=22:fontcolor=0x829e97:x=72:y=h-th-56[v]`
+      : '')
 
   const args = [
     '-y',
     '-hide_banner',
     '-loglevel', 'error',
-    '-f', 'lavfi',
-    '-i', 'testsrc=size=1280x720:rate=25',
+    '-loop', '1',
+    '-framerate', '25',
+    '-i', backgroundPath,
     '-i', audioPath,
+    '-filter_complex', graph,
+    '-map', '[v]',
+    '-map', '[af]',
   ]
-
-  if (filters.length) args.push('-af', filters.join(','))
 
   args.push(
     // One-second keyframes, matching the "practice proxy" note in the design
@@ -585,7 +748,10 @@ async function main() {
   fs.mkdirSync(testmediaDir, { recursive: true })
   console.log(`Backend: ${options.tts === 'edge' ? 'Microsoft Edge read-aloud (neural)' : 'eSpeak NG (offline)'}`)
 
-  const { audioPath, cues, words, scratch } =
+  const renderScratch = fs.mkdtempSync(path.join(os.tmpdir(), 'el-fixture-'))
+  const backgroundPath = path.join(renderScratch, 'background.png')
+
+  const { audioPath, cues, words, scratch: synthesisScratch } =
     options.tts === 'espeak'
       ? await synthesiseWithEspeak(sentences, options)
       : await synthesiseWithEdge(sentences, options)
@@ -602,8 +768,10 @@ async function main() {
     writeVtt(cues, vttPath)
 
     const mp4Path = path.join(testmediaDir, `${options.name}.mp4`)
-    console.log(`\nMuxing video (1-second keyframes)…`)
-    mux(audioPath, mp4Path, options)
+    console.log(`\nDrawing the picture (ruled paper + the audio's own waveform)…`)
+    makeBackground(backgroundPath)
+    console.log(`Muxing video (1-second keyframes)…`)
+    mux(audioPath, mp4Path, options, backgroundPath)
 
     const durationMs = probeDurationMs(mp4Path)
     const wordsPerSecond = words.length && durationMs ? (words.length / (durationMs / 1000)).toFixed(2) : null
@@ -628,9 +796,11 @@ async function main() {
       )
     }
   } finally {
-    // The assembled wav is an intermediate; the audio was already consumed.
+    // The assembled wav, the background PNG and the Edge scratch dir are all
+    // intermediates; the audio was already consumed into the mp4.
     if (options.tts === 'espeak') fs.rmSync(audioPath, { force: true })
-    if (scratch) fs.rmSync(scratch, { recursive: true, force: true })
+    if (synthesisScratch) fs.rmSync(synthesisScratch, { recursive: true, force: true })
+    fs.rmSync(renderScratch, { recursive: true, force: true })
   }
 }
 

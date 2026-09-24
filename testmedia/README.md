@@ -35,9 +35,23 @@ Two reasons, and the second one matters more than the first:
    If the highlighted line and the spoken sentence ever disagree, that is a bug
    in the player. There is no ambiguity about what the "correct" timing is.
 
-The picture is ffmpeg's `testsrc`, which burns a running frame counter into the
-frame. That makes seek behaviour visible: you can see the timestamp the player
-thinks it is at, next to what the audio is actually saying.
+## The picture
+
+Soft "ruled paper" in the app's own mint palette, with the **actual audio** drawn
+across it as a scrolling waveform (`showwaves`, the app's accent colour at 60%
+alpha) and a small caption naming the fixture and the voice. The waveform is
+information, not decoration: you can see a sentence begin and end, see the pause
+between sentences, and see that a seek landed where you meant. During silence the
+line is flat, so "is anything playing?" is answerable from across the room.
+
+It replaced ffmpeg's `testsrc` test pattern, which read as "no signal" — the one
+message a picture must never send in a player. The trade is worth naming: the old
+pattern burnt a frame counter into the frame, which made the *exact* timestamp
+visible; the new one shows audio shape instead, which is the thing this app is
+actually about. Timestamps are in the transport, where they always were.
+
+The background is generated per pixel in this script (a dependency-free PNG
+writer), so the picture is reproducible from code with no binary assets.
 
 The video is encoded with `-g 25 -keyint_min 25 -sc_threshold 0` on purpose:
 exactly one keyframe per second, which is the "practice proxy" recommendation in

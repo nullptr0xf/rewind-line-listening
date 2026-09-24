@@ -3,9 +3,8 @@
 Status log for the English Listening project. Read this first — it is written so
 that a fresh session with no context can pick the work up.
 
-Last updated: 2026-09-24 (M0 complete; fixture re-voiced with neural speech;
-slowed-playback grain diagnosed as the browser's time-stretcher, not a bug — §13;
-M1 not started)
+Last updated: 2026-09-24 (M0 complete; **light study theme** + the fixture's test
+pattern replaced by the audio's own waveform — §14; M1 not started)
 
 ---
 
@@ -65,6 +64,8 @@ from the LAN.
 | Transcript: click to seek, sync highlight, auto-scroll + scroll lock | implemented, **needs a human eye** — see §7 |
 | Repeat line / repeat ×N / pause after line | implemented |
 | Progress memory (resume where you left off) | implemented |
+| Light "study" theme, semantic colour tokens | implemented 2026-09-24 — see §14 |
+| Audio-only lessons get a designed face instead of a blank box | implemented 2026-09-24 — see §14 |
 | Unit tests over the pure modules | 59 passing — see §11 |
 
 ### Deliberately NOT implemented yet
@@ -124,7 +125,7 @@ several sections avoiding.
 | Upload / drag-drop as import entry point #2 | Not built | Marked as the fallback in the doc itself. A browser cannot supply the absolute path the pipeline runs on, so this entry point only ever existed for convenience. |
 | shadcn/ui for components | Hand-written Tailwind components | M0 only needs buttons, a select and a range input. Pulling in Radix now would add surface area without buying anything. Add it when dialogs/menus actually appear (M3 editor). |
 | ffmpeg/ffprobe downloaded from gyan.dev | Staged from the npm registry into `tools/` by `npm run tools:install` | This machine cannot reach the usual mirrors. Same binaries, reproducible install, and now version-pinned in `package.json`. Note the vendored ffmpeg is a 2018 build (it has libx264, which is all the fixture generator needs). |
-| Test material = an open movie (Sintel / Tears of Steel) | Synthesised fixture: **Microsoft Edge read-aloud neural speech** + ffmpeg `testsrc`, with eSpeak NG as the offline fallback | `download.blender.org` is behind a Cloudflare challenge. The synthetic fixture is also a *stronger* test — see `testmedia/README.md` and §12.4. |
+| Test material = an open movie (Sintel / Tears of Steel) | Synthesised fixture: **Microsoft Edge read-aloud neural speech** + a generated "ruled paper & waveform" picture, with eSpeak NG as the offline fallback | `download.blender.org` is behind a Cloudflare challenge. The synthetic fixture is also a *stronger* test — see `testmedia/README.md` and §12.4. The picture replaced `testsrc` on 2026-09-24 (§14), because a test pattern reads as "no signal". |
 | `lesson.json` field `video.duration` (seconds) | `video.durationMs` | Consistency: the whole codebase speaks milliseconds (invariant #5). |
 
 ## 7. Not yet verified — do this next
@@ -602,3 +603,135 @@ Measuring that failed for the same reason as in §10, so it is unresolved and
 sounds good at 1x and churning it would cost a re-listen for no demonstrated
 gain. If it is ever regenerated for another reason, the enum also offers
 `AUDIO_24KHZ_96KBITRATE_MONO_MP3` and `WEBM_24KHZ_16BIT_MONO_OPUS`.
+
+## 14. Light study theme + the end of the test pattern — 2026-09-24
+
+The user asked for a fresher, lighter look ("暗黑色有点压抑") and for the
+fixture's test-pattern frame to be replaced. The theme work was scheduled for
+M5 ("主题/字号") and pulled forward; M1 remains the next milestone.
+
+### 14.1 The theme: role tokens, not a lightness ramp
+
+The old palette was an `ink-100…ink-950` ramp. That silently encodes "dark
+background": when the theme flips, `ink-100` means the opposite of its name and
+every call site has to be re-judged by hand. The new tokens are named by ROLE —
+`canvas / surface / sunken / raised`, `line / line-strong`,
+`ink / ink-soft / ink-muted / ink-faint`, `accent / accent-strong /
+accent-bright / accent-wash / accent-line` — so a theme change is a value
+change, not a semantics change.
+
+The migration was mechanical and audited: 25 distinct tokens, 116 replacements
+across 9 files, with a leftover check that fails loudly on any unmapped token
+(it passed; the only hits left were in prose). What the script could NOT do was
+the judgement calls, and those are where the real work was:
+
+- **Accent polarity inverts.** On dark, the *lighter* accent is the readable
+  one for text; on light it is the darker. `text-accent-400` became
+  `text-accent-strong`, `bg-accent-600` became `bg-accent-strong`, and so on.
+- **The active line is a teal wash, not a grey step.** On a light theme a grey
+  highlight does not read as "this is the line you are hearing". It is also
+  deliberately a *different* tint from hover, so the two can never be confused.
+- **Hover must darken, not lighten.** The old dark-theme hovers mapped onto
+  values that were lighter than their base — invisible on white. Two controls
+  also collapsed into no-op hovers (`hover:border` equalling the base border);
+  both fixed, and the Remove button now hints red, which it should have done
+  from the start.
+- **Amber/red status text went from light-on-dark tints to AA-contrast darks**
+  (`text-amber-300` → `text-amber-800`, `text-red-300` → `text-red-700`).
+- **Text contrast was checked at the sizes actually used.** Most of this UI is
+  11–12px, below the "large text" exemption, so 4.5:1 is the bar. That is why
+  `--color-ink-muted` is `#557068` and not the prettier `#66817a`.
+
+Fullscreen inverts the *tokens* rather than the components: a `:fullscreen`
+block re-scopes the same variable names to dark values, so the player shell
+goes dark with zero per-component `fullscreen:` classes, while the practice bar
+and transcript (outside the fullscreen element) stay light. Tailwind has no
+built-in `fullscreen:` variant; `@custom-variant` covers the few structural
+cases (drop the stage padding and the video's rounded corners).
+
+**Deliberately not built: a theme toggle.** It is now cheap (the tokens exist),
+but the user asked for light, and M5 owns "主题/字号" properly. Note that the
+dark values from the old theme are recoverable from git history if a toggle is
+ever wanted.
+
+### 14.2 The picture: ruled paper and the audio's own waveform
+
+The fixture's video was `testsrc` — a colour-bar test pattern with a burnt-in
+frame counter. In a player that reads as "no signal", which is what the user
+complained about ("无信号花屏图案").
+
+The new picture: a mint "ruled paper" background generated per pixel by the
+fixture script (dependency-free PNG writer, ~2.7 MB of RGB, deflate-compressed),
+with the **actual audio** drawn over it as a scrolling waveform via
+`showwaves` at 60% alpha in the app's accent colour, plus a small caption
+naming the fixture and the voice.
+
+Why this and not something prettier: the waveform is *true*. It is generated
+from the same audio track the file contains, in the same filter graph, via
+`asplit` — so the picture and the sound cannot disagree. A flat line means
+silence, a burst means a word, and a seek that "missed" is visible. That is
+more useful to a listening trainer than a decorative gradient, and unlike a
+fake level meter it cannot lie.
+
+Implementation notes worth keeping:
+
+- `showwaves` in this 2018 ffmpeg build **does emit alpha** (verified by
+  decoding a frame to raw RGBA and reading the corners: `[0,0,0,0]`), so it
+  composites onto a light background with a plain `overlay`. No `blend` math.
+- The audio chain is `adelay → apad → asplit`, one branch feeding the file's
+  audio track, the other feeding the waveform — so the wave includes the
+  lead-in and tail padding, and stays in sync with the subtitle timeline.
+- The caption is drawn **inside** the `-filter_complex` graph. ffmpeg refuses
+  `-vf` on a stream that a complex filtergraph already feeds.
+- Two bugs caught by looking at a frame rather than trusting the exit code: the
+  background's soft glow *added* to channels already near 255, and `Buffer`
+  assignment wrapped them mod 256, painting a magenta ring; and the Edge
+  backend's scratch dir was briefly shadowed by a same-named variable, which
+  would have leaked a temp dir on every run.
+
+### 14.3 Also new: audio-only lessons get a face
+
+`VideoPane` now tracks a `phase` (`loading / picture / audio`) and shows a
+designed panel for audio-only files — which the import panel has always
+accepted (mp3 / m4a / wav) and which previously rendered as a blank black
+rectangle. The decision comes from `videoWidth === 0` on the element itself,
+not from ffprobe, so it is correct even for lessons imported before this
+existed, with no re-import.
+
+The panel's glyph **breathes, it does not meter**. A moving level meter that
+did not follow the audio would be a lie; reading real levels would mean an
+`AnalyserNode` and a render loop on a panel whose only job is to fill an empty
+rectangle. The distinction is written into the CSS next to the keyframes.
+
+### 14.4 Verification
+
+- `tsc --noEmit` clean; **59/59 tests pass**; `next build` clean, no warnings,
+  8 routes.
+- Headless Chrome against the live dev server: the watch page renders the light
+  theme end to end — white panels, mint stage, teal active-line wash, visible
+  seek thumb — and the new lesson (`c5a557c6fa29`, 36 lines) served with the
+  new picture.
+- Frames extracted from the encoded mp4 and *looked at*: ruled paper, caption,
+  and a real speech envelope (syllable bursts, flat during silence). The first
+  prototype's magenta ring was caught this way; the fixed version was re-checked
+  the same way.
+- Old lesson removed through the app's API before re-import:
+  `DELETE /api/lessons/cdaff80b4a8d` → `200`,
+  `{"sourceFileDeleted": false, "sourcePathKept": "…listening-fixture-01.mp4"}`
+  — invariant #6 holds on the wire again.
+- Full regeneration: `36 lines, 401 spoken words, 123.7s, 3.24 words/s`,
+  imported as `c5a557c6fa29`, `36 lines from sidecar-vtt`.
+- **Not verified by automation:** the browser daemon under test kept resetting
+  its tab to `about:blank` mid-session, so a screenshot of the wave *mid-
+  playback* was not captured. The mp4's own frames were verified with ffmpeg,
+  and the in-app frame at t=0 was captured — the wave's motion is inherent to
+  the file, not to the player. Worth one human glance.
+
+### 14.5 Still open
+
+- §7 item 4 (in-place file replacement is not detected) is now *likely to bite*,
+  because regenerating the fixture is a normal operation and every regeneration
+  orphans the old library entry. Recommended before M1: on lesson load, compare
+  the recorded `sizeBytes` against the file and surface a mismatch the way
+  `missingSince` is surfaced.
+- M1 Step 0 (whisper.cpp gate) is untouched. §9's route table stands.
