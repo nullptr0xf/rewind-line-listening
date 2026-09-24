@@ -69,6 +69,15 @@ export const lessonVideoSchema = z.object({
   embeddedSubtitles: z.array(embeddedSubtitleSchema).default([]),
 })
 
+/**
+ * Where a transcript came from.
+ *
+ * `embedded-subtitle` is currently unreachable: reading subtitle streams out of
+ * a container is not a feature of this app (decision 2026-09-24, PROGRESS §9) —
+ * the user exports one with ffmpeg and it arrives as a sidecar. The value is kept
+ * because lesson.json files are durable documents and silently dropping an enum
+ * member would invalidate any file that already used it.
+ */
 export const transcriptSourceSchema = z.enum([
   'manual-vtt',
   'sidecar-vtt',

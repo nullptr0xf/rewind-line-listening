@@ -1,6 +1,7 @@
 'use client'
 
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import { useCallback, useEffect, useRef } from 'react'
 import { usePlaybackClock, type PlaybackClock } from '@/hooks/usePlaybackClock'
 import { useAutoScroll } from '@/hooks/useAutoScroll'
@@ -9,6 +10,7 @@ import { usePlayerStore, type LoopMode } from '@/lib/store/playerStore'
 import { VideoPane } from '@/components/player/VideoPane'
 import { ControlBar } from '@/components/player/ControlBar'
 import { TranscriptList } from '@/components/transcript/TranscriptList'
+import { TranscribePanel } from '@/components/transcribe/TranscribePanel'
 import type { Cue, Lesson } from '@/lib/lesson/schema'
 import type { LessonSummary } from '@/lib/server/repo'
 
@@ -35,8 +37,15 @@ type LoopState = { cueIndex: number; repeats: number; done: boolean }
 
 export function WatchScreen({ lesson, summary }: WatchScreenProps) {
   const cues = lesson.cues
+  const router = useRouter()
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const playerShellRef = useRef<HTMLDivElement | null>(null)
+
+  // The transcript lives in a server component's payload, so the only way to see
+  // freshly transcribed cues is to ask the server to render again.
+  const handleTranscribed = useCallback(() => {
+    router.refresh()
+  }, [router])
 
   const clock: PlaybackClock = usePlaybackClock(videoRef, cues)
   const autoScroll = useAutoScroll(clock.activeIndex)
@@ -228,7 +237,7 @@ export function WatchScreen({ lesson, summary }: WatchScreenProps) {
         <span className="text-ink-faint">/</span>
         <h1 className="truncate text-sm font-medium text-ink">{summary.title}</h1>
         <span className="ml-auto shrink-0 font-mono text-[11px] text-ink-muted">
-          {cues.length} lines
+          {cues.length > 0 ? `${cues.length} lines` : 'no transcript'}
         </span>
       </header>
 
@@ -253,24 +262,34 @@ export function WatchScreen({ lesson, summary }: WatchScreenProps) {
 
         {/* RIGHT: transcript + practice controls */}
         <aside className="flex w-[42%] min-w-[340px] max-w-[640px] shrink-0 flex-col border-l border-line bg-surface">
-          <PracticeBar
-            loopMode={loopMode}
-            loopCount={loopCount}
-            autoPlayOnJump={autoPlayOnJump}
-            pauseAfterLine={pauseAfterLine}
-            pauseDurationMs={pauseDurationMs}
-            onLoopMode={setLoopMode}
-            onLoopCount={setLoopCount}
-            onAutoPlayOnJump={setAutoPlayOnJump}
-            onPauseAfterLine={setPauseAfterLine}
-            onPauseDurationMs={setPauseDurationMs}
-          />
-          <TranscriptList
-            cues={cues}
-            activeIndex={activeIndex}
-            autoScroll={autoScroll}
-            onSelect={handleSelect}
-          />
+          {/* Repeat and pause-after-line are meaningless with no lines to repeat,
+              so the bar goes away rather than offering controls that do nothing. */}
+          {cues.length > 0 ? (
+            <PracticeBar
+              loopMode={loopMode}
+              loopCount={loopCount}
+              autoPlayOnJump={autoPlayOnJump}
+              pauseAfterLine={pauseAfterLine}
+              pauseDurationMs={pauseDurationMs}
+              onLoopMode={setLoopMode}
+              onLoopCount={setLoopCount}
+              onAutoPlayOnJump={setAutoPlayOnJump}
+              onPauseAfterLine={setPauseAfterLine}
+              onPauseDurationMs={setPauseDurationMs}
+            />
+          ) : null}
+          {cues.length === 0 ? (
+            <div className="scroll-thin min-h-0 flex-1 overflow-y-auto p-3">
+              <TranscribePanel lessonId={lesson.video.id} onFinished={handleTranscribed} />
+            </div>
+          ) : (
+            <TranscriptList
+              cues={cues}
+              activeIndex={activeIndex}
+              autoScroll={autoScroll}
+              onSelect={handleSelect}
+            />
+          )}
         </aside>
       </div>
     </div>

@@ -8,6 +8,7 @@
     "build": "next build",
     "start": "next start --hostname 127.0.0.1 --port 4317",
     "ingest": "tsx bin/ingest.ts",
+    "transcribe": "tsx bin/transcribe.ts",
     "tools:install": "node scripts/install-tools.mjs",
     "bench:asr": "tsx scripts/bench-asr.ts",
     "inspect:timeline": "tsx scripts/inspect-timeline.ts",

@@ -3,6 +3,7 @@
 import Link from 'next/link'
 import { useCallback, useState } from 'react'
 import { formatClock } from '@/lib/lesson/vtt'
+import { TranscribePanel } from '@/components/transcribe/TranscribePanel'
 import type { LessonSummary } from '@/lib/server/repo'
 
 /**
@@ -98,6 +99,18 @@ export function LessonList({ lessons, onChanged }: LessonListProps) {
 
             <p className="mt-0.5 truncate font-mono text-[10px] text-ink-faint">{lesson.sourcePath}</p>
           </div>
+
+          {/* A lesson with no transcript is the one case where this list offers an
+              action other than "remove" — transcription is the only way such a
+              lesson ever becomes usable, so the button belongs here rather than
+              behind a click into the player. */}
+          {lesson.cueCount === 0 && !lesson.missingSince ? (
+            <TranscribePanel
+              lessonId={lesson.id}
+              variant="compact"
+              onFinished={onChanged}
+            />
+          ) : null}
 
           <button
             type="button"

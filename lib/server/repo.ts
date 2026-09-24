@@ -1,6 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { LESSONS_DIR, ensureDataDirs } from './config'
+import { CACHE_DIR, LESSONS_DIR, ensureDataDirs } from './config'
 import { getDb, type LessonRow } from './db'
 import { lessonSchema, type Lesson } from '../lesson/schema'
 
@@ -232,6 +232,16 @@ export function removeLesson(id: string, options: RemoveOptions = {}): void {
     fs.rmSync(lessonDir(id), { recursive: true, force: true })
   } catch (error) {
     console.warn(`[repo] could not delete lesson dir for ${id}: ${String(error)}`)
+  }
+
+  // The transcription cache holds an extracted 16 kHz wav and whisper's JSON.
+  // That is tens of megabytes for a long file, and it is derived data with no
+  // meaning once the lesson is gone — leaving it behind would accumulate
+  // unreferenced files that nothing ever cleans up.
+  try {
+    fs.rmSync(path.join(CACHE_DIR, id), { recursive: true, force: true })
+  } catch (error) {
+    console.warn(`[repo] could not delete cache dir for ${id}: ${String(error)}`)
   }
 
   getDb().prepare('DELETE FROM lessons WHERE id = ?').run(id)

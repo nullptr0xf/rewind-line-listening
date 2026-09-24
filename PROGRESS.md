@@ -3,11 +3,11 @@
 Status log for the English Listening project. Read this first — it is written so
 that a fresh session with no context can pick the work up.
 
-Last updated: 2026-09-24 (M0 complete; **light study theme** + the fixture's test
-pattern replaced by the audio's own waveform — §14; **M1 Step 0 gate passed on the
-CPU build** — sentence re-splitter, whisper reader and the acceptance harness are
-built and measured, and the `--vad` timeline split is understood and handled —
-§15, §15.10)
+Last updated: 2026-09-24 (M0 complete; light study theme + waveform fixture — §14;
+M1 complete except embedded-subtitle extraction, which was **dropped on purpose**
+at the user's request — the transcription pipeline now runs end to end from
+`ffmpeg` through `whisper-cli` to `lesson.json`, with live progress in the UI and
+a CLI — §15, §16)
 
 ---
 
@@ -27,7 +27,7 @@ are sentences and clicking one seeks the video to it.
 
 ```bash
 npm install
-npm run tools:install    # stages ffmpeg + ffprobe into ./tools (from the npm registry)
+npm run tools:install    # stages ffmpeg + ffprobe, whisper.cpp, a ggml model and Silero VAD into ./tools
 npm run fixture          # generates testmedia/listening-fixture-01.{mp4,vtt}
 npm run dev              # http://127.0.0.1:4317
 ```
@@ -38,11 +38,14 @@ Other commands:
 npm run ingest -- "<path to a video>"     # import from the command line
 npm run ingest -- --list                  # show the library
 npm run ingest -- "<folder>"              # list candidates; imports nothing until --all / --only 1,3
+npm run transcribe -- --list              # what still needs a transcript
+npm run transcribe -- <lesson-id>         # transcribe it (ffmpeg -> whisper.cpp -> lesson.json)
+npm run transcribe -- --all-missing       # every lesson that has no transcript
 npm run fixture -- --sentences 8          # a short fixture, for quick checks
 npm run fixture -- --voice en-GB-RyanNeural
 npm run fixture -- --list-voices          # what voices the TTS backend offers
 npm run fixture -- --tts espeak           # regenerate the audio with no network
-npm test                                  # 59 unit tests over the pure modules
+npm test                                  # 155 unit tests over the pure modules
 npm run typecheck
 npm run build
 ```
@@ -75,19 +78,22 @@ from the LAN.
 | `npm run inspect:timeline` — explains *why* timings are off | implemented 2026-09-24 — see §15.10 |
 | `npm run tools:install` stages whisper.cpp, a model, Silero VAD | implemented 2026-09-24 — see §15.7 |
 | `--vad` timeline reconciliation (the speech-vs-audio split) | implemented 2026-09-24 — see §15.10 |
-| Unit tests over the pure modules | 107 passing — see §11 |
+| `lib/server/asr.ts` — toolchain discovery + progress parsing | implemented 2026-09-24 — see §16.1 |
+| `lib/server/transcribe.ts` — the `ffmpeg → whisper-cli → lesson.json` job runner | implemented 2026-09-24 — see §16.2 |
+| Transcription API: start / list / SSE progress / cancel | implemented 2026-09-24 — see §16.4 |
+| `npm run transcribe` — the same runner with no UI in the loop | implemented 2026-09-24 — see §16.3 |
+| UI: a live progress strip, in the library and on the player | implemented 2026-09-24, **needs a human eye** — see §16.5 |
+| Unit tests over the pure modules | 155 passing — see §11 |
 
 ### Deliberately NOT implemented yet
 
-- **The ASR pipeline.** The two hard pieces exist and are tested (§15.4), but
-  nothing connects them: there is no `ffmpeg → whisper-cli → lesson.json` runner,
-  no transcription API, no job progress, and `bin/ingest.ts` still reports "no
-  transcript yet" for a file with no subtitle. That is M1 steps 3–5.
 - **Upload / drag-and-drop import.** The design doc lists it as entry point #2
   and explicitly as the fallback, because a browser cannot hand us a real
   filesystem path. Only entry #1 (path) and #3 (CLI) exist. Deferred.
-- **Embedded subtitle extraction** from the container. Detected and reported,
-  not extracted.
+- **Embedded subtitle extraction** from the container. **Not deferred — decided
+  against**, 2026-09-24, at the user's request. Detected and reported, with the
+  one-line `ffmpeg` command to export it, so the user is never stuck; but the
+  container is never read. See §9 step 3 for the reasoning.
 - **Keyboard shortcuts.** The user deferred these ("暂时不用，可以后面配置").
   `ControlBar` has no key handling at all — this is intentional, not an oversight.
 - **Favourites, translation, word-level highlighting, subtitle editor.** M2/M3+.
@@ -103,19 +109,32 @@ several sections avoiding.
    `ingestFile()`. Never add a second path.
 2. **`lib/server/**` must not import `next/*`.** The CLI runs these modules in a
    plain Node process. `NextRequest`, `cookies()`, `headers()` etc. would break
-   it. `lib/server/ingest.ts`, `probe.ts`, `path.ts`, `repo.ts`, `db.ts`,
-   `config.ts` are all pure Node.
-3. **Everything downstream of import works on an absolute path.** Nothing
+   it. `lib/server/asr.ts`, `ingest.ts`, `probe.ts`, `path.ts`, `repo.ts`,
+   `db.ts`, `transcribe.ts` and `config.ts` are all pure Node.
+3. **A client component must never import a *value* from `lib/server/**`.** The
+   mirror image of #2, and it bit us once: importing `STAGE_LABELS` from
+   `lib/server/transcribe.ts` into `TranscribePanel` dragged the whole server
+   graph — `repo` → `db` → `better-sqlite3` → `fs` — into the browser bundle. The
+   error ("Module not found: Can't resolve 'fs'") names a SQLite binding and
+   points nowhere near the actual mistake. Type-only imports are fine (they are
+   erased); shared *values* belong in `lib/lesson/**`, which is why the stage
+   vocabulary lives in `lib/lesson/stages.ts`.
+4. **Everything downstream of import works on an absolute path.** Nothing
    downstream knows what an "upload" is.
-4. **`currentTime` never enters React state.** Per-frame consumers
+5. **`currentTime` never enters React state.** Per-frame consumers
    (`ControlBar`'s playhead) subscribe to the clock and write to the DOM.
    Only the active line index is state. See `hooks/usePlaybackClock.ts`.
-5. **Time is integer milliseconds everywhere.** Seconds only exist at the UI
+6. **Time is integer milliseconds everywhere.** Seconds only exist at the UI
    and export boundary. See `lib/lesson/schema.ts`.
-6. **Nothing ever deletes a user's file.** `removeLesson()` deletes our index
-   row and `data/lessons/<id>/`, and only deletes media it copied itself
-   (`managed === 1`). The discard case does not exist in this codebase.
-7. **The app only listens on `127.0.0.1`.** The ingest API can read any path the
+7. **Nothing ever deletes a user's file.** `removeLesson()` deletes our index
+   row, `data/lessons/<id>/` and the derived transcription cache in
+   `data/cache/<id>/`, and only deletes media it copied itself (`managed === 1`).
+   The discard case does not exist in this codebase.
+8. **A long job pushes full snapshots, not deltas.** Every transcription state
+   change publishes the complete job, so a client that connects late or
+   reconnects is immediately correct and no replay buffer is needed. See
+   `lib/server/transcribe.ts`.
+9. **The app only listens on `127.0.0.1`.** The ingest API can read any path the
    user can read, so exposing it to the LAN would be a file-disclosure hole.
 
 ## 5. Privacy / safety posture
@@ -265,15 +284,42 @@ faster than real time. If this fails, the whole M1 plan needs rethinking.
 
 Then:
 
-1. `tools/whisper-cli.exe` + `large-v3-turbo-q8_0` + Silero VAD weights staged by
-   `scripts/install-tools.mjs`
-2. `lib/lesson/segment.ts` — the sentence re-splitter. **The single most
+1. ~~whisper.cpp + a model + Silero VAD weights staged by
+   `scripts/install-tools.mjs`~~ — **done**, see §15.7. The default model ended up
+   being `base.en-q8_0` rather than `large-v3-turbo-q8_0`, for measured reasons
+   (§15.10).
+2. ~~`lib/lesson/segment.ts` — the sentence re-splitter. **The single most
    important function in the project** (design doc §4.4). Pure function, fixture
-   tests, most of the engineering effort belongs here.
-3. Embedded-subtitle extraction via ffmpeg (cheap, and it can skip ASR entirely)
-4. `node:child_process` job runner + `GET /api/transcribe/:jobId` SSE progress,
-   staged `probing → extracting → vad → asr → segmenting → aligning → done`
+   tests, most of the engineering effort belongs here.~~ — **done**, see §15.4.
+3. ~~Embedded-subtitle extraction via ffmpeg (cheap, and it can skip ASR
+   entirely).~~ — **dropped on purpose, 2026-09-24, at the user's request.** The
+   reasoning is worth keeping, because the doc's own justification made it look
+   free. Two things outweighed it:
+   - It only *sometimes* skips ASR. A file with no subtitle stream still needs
+     the full pipeline, so it is a second transcript path to build, test and
+     explain — not a replacement for the first one.
+   - It is one command the user can type:
+     `ffmpeg -i in.mkv -map 0:2 -c:s webvtt out.en.vtt`. Sidecar discovery
+     already matches on basename, so the exported file is picked up on the next
+     import with **no new code at all**.
+
+   So the container stays unread. Instead `ingest.ts` prints that exact command
+   (with the file's real stream index and a sensible output name) when it sees
+   embedded subtitles, and calls out image-based codecs (PGS/VobSub) separately,
+   because the command silently yields an empty file for those.
+4. `node:child_process` job runner + SSE progress, staged
+   `probing → extracting → transcribing → assembling → segmenting → writing → done`
+
+   > Two deliberate departures from the doc's stage list
+   > (`probing → extracting → vad → asr → segmenting → aligning → done`): `vad` is
+   > not a stage because `--vad` is a flag on the `whisper-cli` call rather than a
+   > pass over the audio, and `aligning` does not exist because `-dtw` produces
+   > word timings *during* the ASR pass — there is no separate forced-alignment
+   > step to wait for on this route.
 5. Wire the UI to it, with a visible job progress strip
+
+**Done in §16.** Steps 4 and 5 are implemented, plus a `npm run transcribe` CLI
+that drives the same runner with no UI in the loop.
 
 ## 10. Verification log
 
@@ -386,8 +432,11 @@ Slow-playback grain, 2026-09-24 (§13):
 the script exited 1 — that is now fixed. The rule for what gets a test: any
 module that is a pure function of its arguments and encodes a decision that is
 expensive to debug through the UI. That is `range.ts`, `vtt.ts`,
-`findActiveCue.ts`, and — added in §15 — `segment.ts` and `whisper.ts`; all five
-are covered above. The count is **107 tests**.
+`findActiveCue.ts`, and — added in §15 — `segment.ts` and `whisper.ts`, plus
+`lib/server/asr.ts` (toolchain resolution and the two progress parsers) and
+`lib/server/transcribe.ts` (the job state machine, driven by injected fake steps
+so the risky part is testable without spawning anything) in §16. The count is
+**155 tests**.
 
 The one caveat learned the hard way (§15.10): a green suite says the code does
 what the *tests* were written to check, and the tests were written from the same
@@ -1059,4 +1108,185 @@ this fixture *cannot* score the interior token timeline at all. The translation
 is justified by the two measurements above and by what VAD physically does — not
 by the fixture agreeing with it. Real material is what will test it, and until
 then the interior mapping should be described as reasoned, not validated.
+
+## 16. M1 steps 4–5: the pipeline, run and wired — 2026-09-24
+
+Step 3 was dropped (§9 step 3), which left the job runner, the API and the UI.
+All three are done, and the pipeline now runs end to end from the UI, from the
+API and from the command line.
+
+### 16.1 `lib/server/asr.ts` — finding the tools
+
+Two things it deliberately does **not** contain.
+
+**No model list.** `scripts/install-tools.mjs` needs one — it has to know
+filenames and expected sizes in order to download. The *runner* must not, because
+a duplicated table is a table that drifts: the installer gains a model and the
+runner keeps insisting it does not exist. So the runner looks at the disk and
+derives the rest from the filename it finds. `ggml-large-v3-turbo-q8_0.bin` →
+`large.v3.turbo` (strip the quantisation suffix, dashes to dots), because that is
+forced by whisper.cpp's own naming: weight files are dashed, DTW tables are
+dotted.
+
+That derivation is then **validated against the set of names whisper.cpp actually
+accepts**, and this is the part that earns its keep: `distil-large-v3-q5_0`
+derives cleanly to `distil.large.v3`, which is not a real DTW table. Passing it to
+`-dtw` fails deep inside the engine, where it reads as a corrupt model rather than
+a bad argument. Resolution now refuses it up front, with a message that says why.
+
+**No hard failure for an optional part.** Missing Silero weights drop `--vad` and
+add a warning, rather than refusing the job — the same posture as ffprobe.
+
+### 16.2 Progress: `-pp` is off by default
+
+The transcription stage is 80% of the wait, so a bar that sits still through it
+is not a progress bar. This was the most valuable measurement of the session, and
+it went the wrong way three times before it went right:
+
+| Hypothesis | Measurement | Verdict |
+|---|---|---|
+| whisper prints `progress = N%` | 131 stderr lines on the 124 s fixture; the only `%` is the VAD sample-reduction message | **absent** |
+| the decoded-segment stdout lines track progress | 28 lines arrived in **one burst at 1.93 s** of a 7.2 s run, max timestamp 28.4 s of 122 s | not streaming, not usable |
+| there is a flag | `-pp, --print-progress [false  ]` | **this is it** |
+
+With `-pp`: five real progress lines (22 / 46 / 70 / 94 / 100%) on a 6.8 s run.
+The parser was right all along; the flag was missing. So `buildWhisperArgs` is a
+pure function with its own tests, and `-pp` has a test whose comment explains
+that nothing else in the invocation reveals it is off.
+
+**ffmpeg, by contrast, needed no discovery** — `-progress pipe:1` works and emits
+`out_time=00:00:30.000188`. It parses `out_time` and not `out_time_ms`: that key
+is named in milliseconds, has always carried microseconds, and older builds
+disagree about it on top of that. `out_time` is a timestamp, so it means one
+thing. (`.5` is half a second, not 5 ms — there is a test, because reading it the
+other way makes the bar lurch.)
+
+### 16.3 The runner
+
+`lib/server/transcribe.ts`. Stages: `queued → probing → extracting →
+transcribing → assembling → segmenting → writing → done`, plus `failed` and
+`cancelled` as separate terminal states.
+
+**Full snapshots, not deltas.** Every change publishes the complete job. That
+makes the SSE endpoint trivially correct — a client connecting late, or
+reconnecting after a socket drops, is immediately right — and no replay buffer
+exists to get out of sync. A few hundred bytes per frame on loopback with one
+user; the usual argument for deltas does not apply.
+
+**A cancelled job is not a failed one.** They are reached the same way (a thrown
+error) but need opposite things from the user, so they are distinguished by an
+explicit flag rather than by string-matching an error message.
+
+**The pipeline is an injected list of steps.** `executeJob` owns stages, progress
+arithmetic and cancellation; the steps own ffmpeg and whisper. That split is what
+makes the risky part — a process-spawning state machine — testable in
+milliseconds with fake steps, including the two properties the UI leans on:
+percentages never go backwards, and a stage that cannot measure itself still
+spends its full share of the bar.
+
+Progress weights are `2 / 8 / 80 / 5 / 3 / 2` (sum 100, asserted in a test), so
+the bar reflects where the time actually goes.
+
+Cancellation kills the child process, not just a flag — otherwise whisper.cpp
+keeps burning a core until it finishes the file, which the user experiences as
+"cancel does nothing". A cancel arriving between `spawn` and registration is
+handled by re-checking once the child is tracked.
+
+### 16.4 The API and the CLI
+
+```
+POST   /api/transcribe              -> 202 + job
+GET    /api/transcribe              -> all jobs (or the live one for ?lessonId=)
+GET    /api/transcribe/<id>         -> one snapshot
+GET    /api/transcribe/<id>?stream=1-> text/event-stream of snapshots
+DELETE /api/transcribe/<id>         -> cancel
+```
+
+Refusals map onto the status that describes them rather than a blanket 400:
+`409 has-transcript` (with the real line count), `409 already-running` (with the
+job id to attach to instead), `404 no-such-lesson`, `422 no-audio`, `503
+toolchain` (with the command that fixes it). The UI does something different for
+each, so flattening them would throw away information the client needs.
+
+`bin/transcribe.ts` drives the identical runner with no UI in the loop — which is
+how this whole step was developed and debugged. It accepts a lesson id, an
+unambiguous prefix, a title substring, or a path (matched by content
+fingerprint), plus `--all-missing` for a batch.
+
+### 16.5 The UI
+
+`hooks/useTranscribeJob.ts` + `components/transcribe/TranscribePanel.tsx`, used
+in two places: inline in a library row (`compact`) and as the content of the
+player when there is no transcript (`full`). The repeat/pause bar is hidden when
+there are no lines, rather than offering controls that do nothing.
+
+Two details that would otherwise be bugs:
+
+- **Reattach on mount.** The job id is never stored in the browser; the panel
+  asks the server what is running for this lesson. A progress strip that vanishes
+  on refresh is worse than none.
+- **Close the `EventSource` on a terminal frame.** `EventSource` reconnects
+  automatically on *any* close, including a deliberate one, so a finished job
+  would otherwise be re-requested in a loop for as long as the page stays open.
+
+### 16.6 Two bugs found by running it
+
+1. **`sink.isCancelled is not a function`.** The executor had been narrowed to a
+   small `JobSink` interface and `startTranscription` was still passing the whole
+   `JobRuntime`. The unit tests construct the sink directly, so they could not see
+   it; the end-to-end run saw it immediately. `tsc` would also have caught it —
+   which is the lesson: **typecheck before the acceptance run, not after.**
+2. **`Module not found: Can't resolve 'fs'`.** `TranscribePanel` imported
+   `STAGE_LABELS` — a *value* — from `lib/server/transcribe.ts`, which pulled
+   `repo` → `db` → `better-sqlite3` → `fs` into the browser bundle. The error
+   names a SQLite binding and points nowhere near the mistake. Fixed by moving the
+   stage vocabulary to `lib/lesson/stages.ts`, which now has no imports at all.
+   Promoted to invariant #3, because it is the mirror image of the rule that
+   already existed and it will happen again otherwise.
+
+### 16.7 Verification log additions
+
+- `npm test` — **155 passing** (was 107); `npm run typecheck` clean
+- **CLI, end to end** on the 124 s fixture (a re-muxed copy with no sibling
+  subtitle), `base.en-q8_0` + VAD: **10.64 s wall** including Node startup, and
+  **38 cues / 401 words** — the same 38 cues `bench:asr` reports, which is the
+  cross-check that the CLI path and the bench path are the same path.
+- The written `lesson.json` was inspected: `source: "asr"`, `engine:
+  "whisper.cpp"`, `model: "base.en-q8_0"`, `vad: true`, `wordTimestamps: true`,
+  segmentation recorded, cue starts monotonic, zero degenerate spans, first cue at
+  740 ms (the §15.10 VAD segment-0 value).
+- **HTTP acceptance**, four cases, all pass:
+  A. refusing to clobber a 8-line transcript → `409 has-transcript` + remedy
+  B. a real job followed over SSE → 12 frames, `transcribing → … → done`,
+     percents monotonic ending at 100
+  C. reattach (`GET ?lessonId=`) mid-run → the live job at 28% / "Transcribing — 22%"
+  D. `DELETE` mid-run → stage `cancelled` with `error: null`, and the lesson's cue
+     count unchanged at 38 — a cancel does not corrupt what was already there
+- **UI smoke test** (server-rendered HTML): the library shows the Transcribe
+  button for a lesson with no transcript; `/watch/<id>` with no cues shows
+  "No transcript yet" and the header reads "no transcript"; a lesson *with* cues
+  still renders the repeat bar. Clicking through it is a **human check** — see
+  §16.8.
+
+### 16.8 Still open
+
+- **The progress strip has never been watched by a human.** The HTML is right and
+  the SSE frames are right, but "does the bar feel honest during a two-minute
+  wait" is a judgement, not a measurement. Import a file with no subtitle and
+  press Transcribe.
+- **No real-world material has been transcribed.** Everything measured is the
+  synthetic fixture: neural TTS, no music, no noise, one accent. §15.8's caveat
+  applies in full — 1.0% WER is a best case, not an expectation. The M0
+  acceptance criterion ("listen for 20 minutes without wanting to stop") is still
+  waiting on a human ear too.
+- **The reattach path is per-page, not global.** The library and the player each
+  poll for the job they care about; there is no single place that lists running
+  jobs. A job started from the CLI is invisible to the browser until it finishes.
+- **One job at a time is enforced per lesson, not globally.** Two different
+  lessons can transcribe at once, and on this CPU that means they each get slower.
+  Unknown whether it matters; a queue would be the fix if it does.
+- **`.ass` is still unsupported**, and image-based subtitle codecs (PGS/VobSub)
+  are now called out explicitly in the ingest warning, since the export command we
+  recommend only works for text-based ones.
+
 

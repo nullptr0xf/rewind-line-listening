@@ -93,6 +93,18 @@ function subtitleSourceFor(extension: string): TranscriptSource {
 }
 
 /**
+ * Subtitle codecs that store pictures of text rather than text. Worth naming
+ * explicitly, because the advice we give for every other embedded stream
+ * ("export it with ffmpeg") silently produces an empty file for these.
+ */
+const IMAGE_SUBTITLE_CODECS = new Set([
+  'hdmv_pgs_subtitle',
+  'dvd_subtitle',
+  'dvb_subtitle',
+  'xsub',
+])
+
+/**
  * Look for a subtitle file sitting next to the video, matching by basename.
  * "ep01.mkv" matches "ep01.en.srt", "ep01.srt" and "ep01.whatever.vtt".
  */
@@ -275,9 +287,28 @@ export async function ingestFile(options: IngestOptions): Promise<IngestReport> 
       engine = path.basename(explicit)
       warnings.push(...result.warnings)
     } else if (probe.embeddedSubtitles.length > 0) {
-      warnings.push(
-        `This file has ${probe.embeddedSubtitles.length} embedded subtitle stream(s), but extraction is part of M1. No transcript loaded yet.`,
+      // Embedded subtitle extraction is deliberately NOT a feature here — decided
+      // 2026-09-24, see PROGRESS §9. Reading a subtitle stream out of a container
+      // is one command the user can type, and every extra ffmpeg code path inside
+      // the app is another thing that can fail in a way we then have to explain.
+      // What we CAN do is turn the dead end into a one-liner, and since sidecar
+      // discovery matches on basename, the exported file is picked up on the next
+      // import with no extra work.
+      const stream = probe.embeddedSubtitles[0]
+      const target = path.join(
+        path.dirname(absPath),
+        `${path.basename(absPath, path.extname(absPath))}.${stream.language ?? 'en'}.vtt`,
       )
+      warnings.push(
+        `This file has ${probe.embeddedSubtitles.length} embedded subtitle stream(s), ` +
+          `but this app does not extract them. Export one next to the video and import again:\n` +
+          `    ffmpeg -i "${absPath}" -map 0:${stream.streamIndex} -c:s webvtt "${target}"`,
+      )
+      if (IMAGE_SUBTITLE_CODECS.has(stream.codec ?? '')) {
+        warnings.push(
+          `Stream ${stream.streamIndex} is ${stream.codec}, which is image-based: it cannot be converted to text. Only OCR would help.`,
+        )
+      }
     }
   }
 
