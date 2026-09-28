@@ -1697,6 +1697,18 @@ has a case where the answer is genuinely different.
   ```
   Resulting `lesson.json`: `managed: true`, `source: sidecar-vtt`, `cues: 6`,
   `durMs: 19064`, `hasAudio: true`, `hasVideo: false`.
+- **The same run against yt-dlp**, after `npm run downloader:install` staged it
+  as well. This mattered more than it looks: the code prefers yt-dlp, so the
+  first install silently changed which tool every download would use, and the
+  yt-dlp flag set had never been exercised at all. It works — `downloader:
+  yt-dlp (tools/downloader/yt-dlp)`, same 6 lines, same `sidecar-vtt`, and the
+  **same lesson id** (`5f350c864d04`), so the re-download reused the existing
+  lesson instead of creating a second one. The reason it works in both
+  directions is that the arg builder was written from the intersection of the
+  two flag sets (`-J` for metadata, and `--no-convert-subs` dropped because it is
+  yt-dlp-only) — a subset that youtube-dl accepts is a subset yt-dlp accepts.
+  Worth stating plainly because the reverse is not true, and the tempting
+  shortcut is to look up one tool's documentation and use it for both.
 - **End to end, through HTTP** (dev server on `:4317`): `GET /api/download` →
   `{jobs:[]}`; `POST` a malformed URL → `400` `{code:'bad-url'}`; `POST` a real
   URL → `202` + job; `GET ?url=` → the same job; `GET /<id>?stream=1` → SSE
