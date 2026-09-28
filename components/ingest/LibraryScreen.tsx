@@ -2,6 +2,7 @@
 
 import { useCallback, useState } from 'react'
 import { ImportPanel } from './ImportPanel'
+import { UrlDownloadPanel } from './UrlDownloadPanel'
 import { LessonList } from './LessonList'
 import type { LessonSummary } from '@/lib/server/repo'
 
@@ -41,12 +42,16 @@ export function LibraryScreen({ initialLessons }: { initialLessons: LessonSummar
           <h1 className="text-xl font-semibold tracking-tight text-ink">English Listening</h1>
         </div>
         <p className="mt-2.5 max-w-xl text-xs leading-relaxed text-ink-muted">
-          A local, single-user trainer: video becomes a per-sentence transcript you can click,
+          A local, single-user trainer: a video becomes a per-sentence transcript you can click,
           loop and sit on. Everything stays on this machine.
         </p>
       </header>
 
+      {/* Two entry points, one card each. They read as a continuation rather than
+          as alternatives because both end in the same pipeline — a file named by
+          path, or a file fetched from a URL. */}
       <ImportPanel onImported={() => void refresh()} />
+      <UrlDownloadPanel onImported={() => void refresh()} />
 
       <section className="mt-9">
         <h2 className="mb-3 text-xs font-medium tracking-wide text-ink-muted uppercase">

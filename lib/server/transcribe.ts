@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from 'node:child_process'
+import type { ChildProcess } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -6,6 +6,10 @@ import { isFfmpegDone, parseFfmpegTime, parseWhisperProgress, resolveAsrTools, t
 import { CACHE_DIR, ensureDataDirs } from './config'
 import { findTool, probeFile } from './probe'
 import { getLessonRow, loadLesson, saveLesson, upsertLesson } from './repo'
+// `runProcess`/`lastLines` live in their own module because the URL-download
+// runner needs exactly the same pipe-and-buffer handling, and two copies of it
+// would be two places to fix the same subtle Windows bug.
+import { lastLines, runProcess } from './run-process'
 import { DEFAULT_ASSEMBLE_OPTIONS, assembleWords, parseWhisperJson } from '../lesson/whisper'
 import { DEFAULT_SEGMENT_OPTIONS, segmentWords, segmentationRecord } from '../lesson/segment'
 import { SCHEMA_VERSION, type Cue, type CueWord, type Lesson } from '../lesson/schema'
@@ -373,69 +377,6 @@ export async function executeJob(
 }
 
 // --- the real pipeline ------------------------------------------------------
-
-/** Longest we keep of a child's stderr. A long file emits thousands of progress lines. */
-const STDERR_TAIL_BYTES = 4096
-
-/**
- * Run a child process, handing each output line to a callback.
- *
- * Deliberately does NOT accumulate full output: whisper.cpp narrates every
- * segment it decodes, and holding that for a 45-minute file is pure waste. Only
- * a bounded tail of STDERR is kept — stdout carries ffmpeg's progress machine
- * chatter and would otherwise drown the error messages that matter.
- */
-function runProcess(
-  command: string,
-  args: string[],
-  options: {
-    onStdout?: (line: string) => void
-    onStderr?: (line: string) => void
-    onSpawn?: (child: ChildProcess) => void
-  } = {},
-): Promise<{ code: number; stderrTail: string }> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
-    options.onSpawn?.(child)
-
-    let stderrTail = ''
-    let stdoutBuffer = ''
-    let stderrBuffer = ''
-
-    const drain = (buffer: string, line: (value: string) => void) => {
-      const parts = buffer.split(/\r?\n/)
-      const rest = parts.pop() ?? ''
-      for (const part of parts) line(part)
-      return rest
-    }
-
-    child.stdout?.setEncoding('utf8')
-    child.stdout?.on('data', (chunk: string) => {
-      stdoutBuffer += chunk
-      stdoutBuffer = drain(stdoutBuffer, options.onStdout ?? (() => {}))
-    })
-
-    child.stderr?.setEncoding('utf8')
-    child.stderr?.on('data', (chunk: string) => {
-      stderrTail = (stderrTail + chunk).slice(-STDERR_TAIL_BYTES)
-      stderrBuffer += chunk
-      stderrBuffer = drain(stderrBuffer, options.onStderr ?? (() => {}))
-    })
-
-    child.on('error', reject)
-    child.on('close', (code) => resolve({ code: code ?? -1, stderrTail }))
-  })
-}
-
-/** The last few non-empty lines of a child's stderr — where the real error is. */
-function lastLines(text: string, count = 3): string {
-  return text
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .slice(-count)
-    .join(' ')
-}
 
 export function cacheDirFor(lessonId: string): string {
   return path.join(CACHE_DIR, lessonId)

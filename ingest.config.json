@@ -4,5 +4,16 @@
   "managedMediaDir": "data/media",
   "allowedRoots": [],
   "ffprobePath": null,
-  "ffmpegPath": null
+  "ffmpegPath": null,
+
+  "$downloader": "URL import (youtube-dl / yt-dlp). proxy: '\"auto\"' health-checks what is configured or detected and uses the first live one, '\"none\"' forces a direct connection, anything else is used verbatim. outputDir: null = data/media, which the app treats as its own and may delete when a lesson is removed.",
+  "downloader": {
+    "pythonPath": null,
+    "directory": null,
+    "proxy": "auto",
+    "outputDir": null,
+    "audioOnly": true,
+    "maxHeight": 720,
+    "captions": true
+  }
 }

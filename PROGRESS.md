@@ -84,7 +84,13 @@ from the LAN.
 | Transcription API: start / list / SSE progress / cancel | implemented 2026-09-24 — see §16.4 |
 | `npm run transcribe` — the same runner with no UI in the loop | implemented 2026-09-24 — see §16.3 |
 | UI: a live progress strip, in the library and on the player | implemented 2026-09-24, **needs a human eye** — see §16.5 |
-| Unit tests over the pure modules | 157 passing — see §11 |
+| `lib/server/download-tools.ts` — downloader discovery, proxy resolution, progress parsing | implemented 2026-09-28 — see §18.2 |
+| `lib/server/download.ts` — the URL download job runner (download → ingest) | implemented 2026-09-28 — see §18.3 |
+| Download API: start / list / SSE progress / cancel, plus dedupe by URL | implemented 2026-09-28 — see §18.4 |
+| UI: a URL box that downloads and imports, on the library page | implemented 2026-09-28, **needs a human eye** — see §18.5 |
+| `npm run fetch` — the same runner with no UI in the loop | implemented 2026-09-28 — see §18.6 |
+| `npm run downloader:install` — stages youtube-dl into `tools/downloader` | implemented 2026-09-28 — see §18.6 |
+| Unit tests over the pure modules | 219 passing — see §11 |
 
 ### Deliberately NOT implemented yet
 
@@ -137,6 +143,18 @@ several sections avoiding.
    `lib/server/transcribe.ts`.
 9. **The app only listens on `127.0.0.1`.** The ingest API can read any path the
    user can read, so exposing it to the LAN would be a file-disclosure hole.
+10. **A URL download is not a second ingest path.** `lib/server/download.ts`
+    downloads, then calls `ingestFile()` exactly like a local import — #1 still
+    holds, and the downloader is only a way of *producing* the absolute path
+    that #4 requires. This is also why the downloader is optional: everything
+    downstream of `ingestFile()` works with no downloader present at all.
+11. **Never use `spawnSync`.** Every child process in this codebase is spawned
+    asynchronously. On this machine `spawnSync` fails with `EBUSY` in *all four*
+    variants (measured 2026-09-28, §18.7) — including from a plain Node script
+    with nothing else running — so a synchronous probe does not fail loudly, it
+    returns an empty result that reads exactly like "not installed". This cost
+    hours: the python-discovery and registry probes were silently answering
+    "nothing here" while python sat on disk. See `lib/server/run-process.ts`.
 
 ## 5. Privacy / safety posture
 
@@ -183,6 +201,19 @@ several sections avoiding.
    `fs.statSync(video.path).size` (or recompute the digest) against `video.size`
    and surface it the way `missingSince` already is. **Not done** — it is new
    behaviour, not part of the fixture change.
+5. **The URL box, by a human.** The API behind it is verified end to end
+   (§18.9) and the panel server-renders, but nobody has yet typed a URL into the
+   real page, watched the bar move, and clicked through to the player. The one
+   thing that genuinely needs eyes: the reattach path — reload the page
+   mid-download and the box should pick the job back up from `localStorage`
+   rather than offering to start a second one. That is client-only and no HTTP
+   test can see it.
+6. **Only YouTube has been exercised as a source.** The downloader claims to
+   handle ~1000 sites and the app does nothing YouTube-specific, but "the
+   extractor set works" is an assumption, not a measurement. A Vimeo or
+   SoundCloud URL is the cheap next check; a site whose subtitles are *not* in
+   `en` is the other (the caption language is a config value that has never been
+   changed from its default).
 
 ## 8. Environment notes for this machine
 
@@ -437,8 +468,18 @@ expensive to debug through the UI. That is `range.ts`, `vtt.ts`,
 `findActiveCue.ts`, and — added in §15 — `segment.ts` and `whisper.ts`, plus
 `lib/server/asr.ts` (toolchain resolution and the two progress parsers) and
 `lib/server/transcribe.ts` (the job state machine, driven by injected fake steps
-so the risky part is testable without spawning anything) in §16. The count is
-**157 tests**.
+so the risky part is testable without spawning anything) in §16, and
+`lib/server/download-tools.ts` (option construction, `--help`-verified flags,
+progress parsing, and the proxy ladder with the health check injected — §18)
+in §18. The count is **219 tests**.
+
+The new download suite is the clearest case yet for *why* the injected-seam
+pattern is worth the trouble. `resolveDownloadProxy` takes its `check` and
+`registry` as parameters, so the tests exercise the full candidate ladder —
+config → env → registry → common ports, rejection reasons and all — with **no
+socket, no `reg.exe`, and no proxy running**, and they run in milliseconds
+instead of waiting out real timeouts. The production path and the tested path
+differ only in which function is passed in.
 
 Some behaviours need more than a unit test, and get a named entry point instead
 (`npm run bench:asr`, `npm run inspect:timeline`, `npm run verify:step` — §15.10,
@@ -1426,5 +1467,272 @@ Asked whether a dedicated "replay this line" key (e.g. `R`) was wanted now that
 affordances — clicking a line in the transcript, and `Repeat → Line`. No new
 key, and `←` stays strictly "previous line". This closes §17; nothing pending
 from the arrow-key work except the human keystroke check above.
+
+## 18. M1 step 6: download from a URL — 2026-09-28
+
+Requested by the user: *"a box where I can paste a YouTube URL (or another
+site's, later), that downloads the video locally and then continues with the
+same series of operations"*, calling into a `youtube-dl` checkout they had
+already cloned.
+
+The second half of that sentence is the whole design. "Then continues with the
+same series of operations" means **the download is a way of producing a file,
+not a second pipeline** — so the feature is a decorator in front of
+`ingestFile()`, and everything after it (probing, subtitles, the player,
+transcription, progress memory) is untouched and unaware. Verified: the
+`lesson.json` a URL download produces is field-for-field the shape a local
+import produces.
+
+### 18.1 The downloader is optional, and that shapes the code
+
+`youtube-dl` is a Python program on this machine only because the user cloned
+it; it is not something the app can assume. So resolution is a ladder, tried in
+order, and *the app works fine with none of them present* — the URL box is the
+only thing that stops working:
+
+1. `tools/downloader/<kind>/` — the copy `npm run downloader:install` stages
+2. a `youtube_dl` / `yt_dlp` module importable by a Python we found
+3. a `youtube-dl` / `yt-dlp` console script on `PATH`
+
+`yt-dlp` is tried before `youtube-dl` when both are present: it is the
+maintained fork and fixes extractors that break when a site changes. The two are
+**not** flag-compatible, so the flag set is chosen per tool (§18.7).
+
+### 18.2 `lib/server/download-tools.ts` — resolution, and nothing else
+
+Pure Node, no `next/*` (invariant #2), no side effects beyond spawning the
+tools it is asking about. Three jobs:
+
+- **Find a Python that works.** Candidates come from config, then `python` /
+  `python3` / `py`, then a glob sweep. Each is asked to import the downloader
+  module *and* to print its version, so "present but broken" is distinguished
+  from "absent". `pythonCandidates()` takes the configured list as a parameter
+  rather than reading config itself, which is what makes the ladder testable.
+- **Resolve a proxy.** `"auto"` (the default) tries, in order: the
+  `https_proxy`/`http_proxy` environment variables, the Windows registry, then
+  the common local proxy ports. Every candidate is *health-checked against the
+  host the download will actually reach* before being accepted (§18.7).
+- **Build and parse.** Every flag is verified against the tool's own `--help`,
+  and the `[download] 42.1% of 12.34MiB at 1.2MiB/s ETA 00:05` progress line is
+  parsed into structured progress.
+
+### 18.3 `lib/server/download.ts` — the job runner
+
+Modelled directly on `transcribe.ts`, because that runner's shape was already
+right and there is no reason for a second one:
+
+- In-memory registry hung off `globalThis` (survives a dev-server HMR reload)
+- **Full snapshot publishes, never deltas** (invariant #8) — a client that
+  connects late is immediately correct with no replay buffer
+- Cancellable by killing the child process
+- The risky part (the step sequence) is injected, so the state machine is
+  testable without spawning anything
+
+Three stages with weights that sum to 100: `probing` (5) → `downloading` (90) →
+`importing` (5). The narrow first slice is deliberate: metadata and the proxy
+health check are the parts most likely to fail, and reporting 5% immediately
+tells the user the toolchain works before the long wait starts.
+
+The `importing` stage calls `ingestFile({ path, managed: isInside(mediaPath,
+managedMediaDir), onProgress })`. That `managed` flag is the interesting part —
+see §18.7.
+
+### 18.4 The API
+
+`app/api/download/route.ts` (list, start, dedupe) and
+`app/api/download/[jobId]/route.ts` (snapshot, SSE stream, cancel). Same SSE
+contract as transcription: `?stream=1`, first frame is the current state, the
+stream closes on a terminal stage. Status codes are mapped from the problem
+kind: `400` bad URL, `409` already running, `503` no downloader, `500` nowhere
+to save.
+
+Two behaviours worth naming:
+
+- **Starting the same URL twice is a no-op, not a second download.** `POST`
+  returns `409` with the *existing* `jobId` attached, so the client reattaches
+  instead of erroring at the user. `GET ?url=` answers the same question for a
+  page that just loaded.
+- **The URL is stored in `localStorage` and reattach happens on mount**, so a
+  reload mid-download does not orphan a running job. The hook detaches on a
+  terminal frame, specifically to stop `EventSource` from reconnecting forever
+  to a job that is already finished.
+
+### 18.5 The UI
+
+`components/ingest/UrlDownloadPanel.tsx`, sat directly under the local import
+panel — the two entry points read as one list of ways to get a video in. The
+progress bar shows the server's number verbatim; there is no client-side
+interpolation, because a bar that animates smoothly while the download is
+actually stalled is a lie. The completed state offers **Open it**, which is a
+link to `/watch/<lessonId>` — the ordinary lesson page, because that is what it
+is.
+
+The panel also carries an *"also fetch the site's captions"* checkbox, on by
+default. When the site has a subtitle track, the lesson is readable the instant
+the download finishes — no transcription, and no whisper run at all. That is
+the difference between a 30-second and a 4-minute wait for a 19-second clip.
+
+### 18.6 The CLI and the installer
+
+`npm run fetch -- <url>` drives the same `startDownload` the route does, for the
+same reason `bin/ingest.ts` exists: when a download fails, having no browser in
+the loop is the difference between a diagnosis and a guess. `--doctor` prints
+the downloader, the resolved proxy, and the health-check result.
+
+`scripts/install-downloader.mjs` stages a copy into `tools/` in three steps:
+`--from <dir>` (copy a checkout you name, which is how the user's existing clone
+gets used), then an already-importable module, then `git clone` through
+`ghfast.top`. `tools/` is gitignored, so the clone is reproducible rather than
+committed.
+
+### 18.7 Six things this cost real time to learn
+
+All measured on this machine, 2026-09-28. Each one is recorded because each one
+produced a failure that *looked like something else*.
+
+**1. `spawnSync` fails with `EBUSY` — always.** All four variants
+(`spawnSync('python', [...])`, with an explicit path, with `shell: true`, via
+`child_process.execFileSync`) fail the same way, including from a plain Node
+script with nothing else running. The consequence is nasty: a synchronous probe
+does not throw where you would notice, it returns an empty result — so python
+discovery and the registry read both answered *"nothing here"* while Python sat
+on disk at a path the code had already computed. **This is now invariant #11**,
+and `lib/server/run-process.ts` is the only place that spawns anything.
+Async `spawn` is unaffected, in the same environment, on the same call.
+
+**2. A TCP connect is not a proxy check.** This machine has a proxy at
+`127.0.0.1:52389` that accepts connections and is a real proxy — it is the
+sandbox's own egress proxy — but answers `502 Bad Gateway` / times out for
+`www.youtube.com`, because it only permits a fixed set of hosts. The real one is
+`127.0.0.1:7897`. A port-open check puts `52389` at the *top* of the candidate
+list and every download then fails with a 502 that names neither the proxy nor
+the port, and reads exactly like the site blocking you. So the check is a real
+`CONNECT host:443` round trip, sent to **the host the download will actually
+use**. The resolved-proxy line in `--doctor` now answers "works for this site?"
+in one line. The rejected candidate is reported rather than silently dropped,
+because the user may recognise it:
+
+```
+proxy       : http://127.0.0.1:7897 (probe)
+! Ignored unusable proxy setting(s): http://127.0.0.1:52389 [env] — timed out.
+checked via : www.youtube.com:443
+```
+
+**3. An unconnected socket holds no handle, and the process exits silently.**
+The first version of `probeProxyConnect` built the socket, wrote the `CONNECT`
+line, and awaited the response — but never called `socket.connect()`. Nothing
+kept the event loop alive, so the process drained and **exited 0 with no
+output**, which reads as "the check passed". It now calls `connect()` before
+writing, with a comment, because the failure mode is invisible in review: the
+code *looks* like it makes a request.
+
+**4. yt-dlp and youtube-dl do not share flags, and youtube-dl fails hard.**
+`--print` and `--no-convert-subs` are yt-dlp-only; passing either to youtube-dl
+is not ignored, it is `error: no such option` and exit. (`--print` is worse: it
+is *ambiguous* with `--print-json` / `--print-traffic`, so the error message
+does not name the real problem.) Two consequences: the flag set is chosen per
+tool, and metadata is fetched with `-J` / `--dump-json`, which both accept. All
+17 flags in the final arg builder were checked against `youtube-dl --help`
+individually.
+
+**5. `HTTP_PROXY` in caps is ignored; lowercase wins.** `urllib`'s
+`getproxies()` only reads the lowercase spellings. The resolution order is
+therefore `EL_DOWNLOAD_PROXY` (explicit override) → lowercase → uppercase, and
+**`--proxy` is always passed explicitly**, even when a proxy came from the
+environment — because youtube-dl omitting it falls back to reading the Windows
+registry itself, which reintroduces exactly the stale-entry 502 the whole proxy
+layer exists to prevent. Belt and braces, on purpose: the app's own resolution
+and the downloader's must not disagree.
+
+**6. A blocked program throws synchronously from `spawn`.** `reg.exe` is on the
+sandbox's program blacklist, and the block does not arrive as an `error` event —
+it **throws `EPERM` out of the `spawn()` call itself**, inside the Promise
+executor, where it becomes a rejection unless caught. Every `spawn` in the
+download path is therefore wrapped in `try`/`catch` that resolves a "could not
+run it" result instead of rejecting. The registry is one *candidate source*, not
+a requirement, so its absence degrades to "one fewer hint" and never to a
+failure.
+
+### 18.8 `managed: true` — the first time it has ever been true
+
+Invariant #7 says the app never deletes a user's file, with one exception:
+media it copied itself (`managed === 1`). Until this feature, **that exception
+had never actually fired.** Everything was imported by path and read in place,
+`managed` was always `0`, and `removeLesson`'s managed-media branch was dead
+code in practice.
+
+A URL download is that case, and it is the honest reason the branch exists:
+nobody else on the machine has a copy of that file, so deleting the lesson must
+delete the media, or the user has an invisible growing folder. The ingest call
+passes `managed` explicitly, and it is computed with an `isInside()` check
+against the managed media dir rather than assumed — because `--out` can point
+the downloader at a directory the user owns, and a file inside the *user's*
+folder must not become deletable just because we downloaded it.
+
+This is the one place where the download feature changes a behaviour outside
+itself, so it is called out here and in the README ("a downloaded file becomes
+ours"). The lesson page's remove dialog is the same dialog as always; it now
+has a case where the answer is genuinely different.
+
+### 18.9 Verification log additions
+
+- `npm test` — **219 passing** (was 157; `lib/server/download-tools.test.ts`
+  adds 62)
+- `npm run typecheck` — clean
+- `npm run build` — passes (see the note below)
+- `npm run fetch -- --doctor <url>` — `checked via : www.youtube.com:443`;
+  picks `127.0.0.1:7897` and reports `52389` as rejected
+- **End to end, via `bin/fetch.ts`:**
+  ```
+  downloader: youtube-dl (tools/downloader/youtube-dl)
+      5%  Downloading
+     95%  Downloading · Me at the zoo
+     95%  Adding to the library · Locating the file
+    100%  Done · 6 lines from sidecar-vtt
+    done
+    Me at the zoo (youtube)
+    D:\…\data\media\jNQXAC9IVRw.m4a
+    6 lines from sidecar-vtt
+    open: http://127.0.0.1:4317/watch/5f350c864d04
+  ```
+  Resulting `lesson.json`: `managed: true`, `source: sidecar-vtt`, `cues: 6`,
+  `durMs: 19064`, `hasAudio: true`, `hasVideo: false`.
+- **End to end, through HTTP** (dev server on `:4317`): `GET /api/download` →
+  `{jobs:[]}`; `POST` a malformed URL → `400` `{code:'bad-url'}`; `POST` a real
+  URL → `202` + job; `GET ?url=` → the same job; `GET /<id>?stream=1` → SSE
+  frames that walk `probing` → `downloading` → `importing` → `done`;
+  `DELETE /<id>` → `{cancelled:true}` and the job reaches `cancelled`; a second
+  `POST` of an in-flight URL → `409` + the existing `jobId`. The ghost-proxy
+  rejection shows up in the job's `warnings`, so the UI can surface it.
+- Re-downloading the same URL reuses the existing lesson — no orphan row.
+- Cancelling left no `.part` / `.ytdl` residue in `data/media`.
+
+Note on `next build`: it emits a Turbopack warning for any `path.resolve()` the
+tracer cannot statically scope, because it then assumes the whole project may be
+reachable and inlines it. `config.ts` already carried the fix idiom
+(`/* turbopackIgnore: true */`, with the reasoning written above
+`findProjectRoot`) — the two new downloader paths needed the same hint. Worth
+remembering that the tracer's own advice is to *silence* these once you know the
+access is intentional: the warning it prints is long, and it buries real
+warnings underneath it.
+
+### 18.10 Still open
+
+- **The panel needs a human eye** (§7 item 5). The API is verified; nobody has
+  typed in the box.
+- **Only YouTube is measured as a source** (§7 item 6).
+- **A stalled download and a slow one look the same.** The bar shows the
+  server's percent, so a transfer that has genuinely hung sits at 45% and says
+  `Downloading` forever. `--socket-timeout 30` bounds each read, but a
+  mid-transfer hang is not covered. A "no progress for N seconds" warning would
+  fix it; not built.
+- **`--max-height` has no UI.** The API and the CLI take it; the panel only
+  offers audio-only vs video. Fine for now — the default (720p) is what a
+  listening tool wants, and video is the exception.
+- **No download history.** Only `activeJobForUrl` and `listJobs` exist, both
+  memory-only, so a finished download is forgotten on restart. The *lesson*
+  persists, which is what matters, but "what did I download last week" is
+  unanswerable. Not needed yet; noted because the data is already in
+  `lessons/`.
 
 
