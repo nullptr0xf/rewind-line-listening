@@ -3,7 +3,7 @@
 Status log for the English Listening project. Read this first — it is written so
 that a fresh session with no context can pick the work up.
 
-Last updated: 2026-10-02 (three user-reported player bugs fixed — rolling-caption dedup in the sidecar parser, the audio-only clock freeze, and a video-mode re-download — §19)
+Last updated: 2026-10-03 (player bugs fixed — §19; sidecar captions now re-split into sentences via the existing segmenter — §19.4)
 M1 complete except embedded-subtitle extraction, which was **dropped on purpose**
 at the user's request — the transcription pipeline now runs end to end from
 `ffmpeg` through `whisper-cli` to `lesson.json`, with live progress in the UI and
@@ -1806,3 +1806,19 @@ video stream; `VideoPane` was correct.
 lesson was re-downloaded with `npm run fetch -- <url> --video`, which imports
 as a new lesson (different fingerprint); the old audio-only lesson can be
 removed from the library if it is in the way.
+
+### 19.4 Sidecar lines are display cuts, not sentences (2026-10-03, same day)
+
+The dedup of §19.1 exposed the next layer: YouTube captions are cut at display
+width (~2s, mid-clause), and `parseSubtitleText` mapped them 1:1 into cues —
+so the transcript was a pile of fragments like "A lot has been going on with AI
+over the". The whisper route never had this problem because everything flows
+through `segmentWords`.
+
+**Fix:** `resegmentCues` in `lib/lesson/vtt.ts` — synthesise a word timeline
+by distributing each cue's span across its words proportionally to length,
+preserve the real gaps between cues, and run the existing segmenter over it.
+Pseudo-word timings are discarded afterwards (`words: null`): good enough to
+place sentence boundaries, not honest enough to highlight against.
+`parseSubtitleText` re-segments by default (`resegment: false` opts out, for
+serializer round-trips). The lecture went 1505 lines → 609 sentence cues.

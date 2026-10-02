@@ -8,6 +8,7 @@ import {
   parseSubtitleText,
   parseTimedText,
   parseTimestamp,
+  resegmentCues,
 } from './vtt'
 
 describe('parseTimestamp', () => {
@@ -301,6 +302,8 @@ describe('timing helpers', () => {
 })
 
 describe('round trip', () => {
+  // The serializer round-trips *cues*, so these opt out of sentence
+  // re-segmentation — a re-cut transcript would not compare line for line.
   it('survives cues -> WEBVTT -> cues', () => {
     const original = [
       'WEBVTT',
@@ -312,8 +315,8 @@ describe('round trip', () => {
       'Second line',
     ].join('\n')
 
-    const { cues } = parseSubtitleText(original)
-    const reparsed = parseSubtitleText(cuesToVtt(cues)).cues
+    const { cues } = parseSubtitleText(original, { resegment: false })
+    const reparsed = parseSubtitleText(cuesToVtt(cues), { resegment: false }).cues
 
     expect(reparsed.map((cue) => [cue.start, cue.end, cue.text])).toEqual(
       cues.map((cue) => [cue.start, cue.end, cue.text]),
@@ -321,8 +324,10 @@ describe('round trip', () => {
   })
 
   it('survives cues -> SRT -> cues', () => {
-    const { cues } = parseSubtitleText('WEBVTT\n\n00:00:01.000 --> 00:00:02.500\nOnly line')
-    const reparsed = parseSubtitleText(cuesToSrt(cues))
+    const { cues } = parseSubtitleText('WEBVTT\n\n00:00:01.000 --> 00:00:02.500\nOnly line', {
+      resegment: false,
+    })
+    const reparsed = parseSubtitleText(cuesToSrt(cues), { resegment: false })
     expect(reparsed.report.format).toBe('srt')
     expect(reparsed.cues.map((cue) => [cue.start, cue.end, cue.text])).toEqual(
       cues.map((cue) => [cue.start, cue.end, cue.text]),
@@ -330,7 +335,97 @@ describe('round trip', () => {
   })
 
   it('numbers cues sequentially starting at 1', () => {
-    const { cues } = parseSubtitleText('WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nText')
+    const { cues } = parseSubtitleText('WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nText', {
+      resegment: false,
+    })
     expect(cuesToVtt(cues)).toMatch(/^WEBVTT\n\n1\n/)
+  })
+})
+
+describe('resegmentCues — sidecar lines become sentences', () => {
+  // Real shape from the AI-Agents lecture: YouTube's own captions, cut every
+  // ~2 seconds at display width, after rolling dedup.
+  const displayCut = [
+    'WEBVTT',
+    '',
+    '00:00:00.080 --> 00:00:02.550',
+    'A lot has been going on with AI over the',
+    '',
+    '00:00:02.560 --> 00:00:04.470',
+    'past few years. Prompt engineering,',
+    '',
+    '00:00:04.480 --> 00:00:06.789',
+    'context, windows, tokens, embeddings,',
+    '',
+    '00:00:06.799 --> 00:00:09.990',
+    'rag, vector DB, MCPS, agents, lang',
+    '',
+    '00:00:10.000 --> 00:00:12.470',
+    'chain, langraph, claude, Gemini, and',
+    '',
+    '00:00:12.480 --> 00:00:14.549',
+    'more. If you felt left out, this is the',
+    '',
+    '00:00:14.559 --> 00:00:16.470',
+    'only video you will need to watch.',
+    '',
+  ].join('\n')
+
+  it('merges display lines into sentence cues at the punctuation', () => {
+    const { cues } = parseSubtitleText(displayCut)
+    expect(cues.map((cue) => cue.text)).toEqual([
+      'A lot has been going on with AI over the past few years.',
+      'Prompt engineering, context, windows, tokens, embeddings, rag, vector DB, MCPS, agents, lang chain, langraph, claude, Gemini, and more.',
+      'If you felt left out, this is the only video you will need to watch.',
+    ])
+  })
+
+  it('keeps sentence cues inside the time they were actually spoken', () => {
+    const { cues } = parseSubtitleText(displayCut)
+    for (const cue of cues) {
+      expect(cue.start).toBeGreaterThanOrEqual(80)
+      expect(cue.end).toBeLessThanOrEqual(16_470)
+      expect(cue.end).toBeGreaterThan(cue.start)
+    }
+    // The first sentence ends where "years." was interpolated inside its
+    // display line (2560-4470) — a word-level boundary, not the line's edge.
+    expect(cues[0].end).toBeGreaterThan(2560)
+    expect(cues[0].end).toBeLessThan(4470)
+  })
+
+  it('reports the re-split in the ingest report', () => {
+    const { report } = parseSubtitleText(displayCut)
+    expect(report.warnings.join()).toMatch(/Re-split 7 caption line\(s\) into 3 sentence cue\(s\)/)
+  })
+
+  it('is idempotent on its own output', () => {
+    const first = parseSubtitleText(displayCut).cues
+    const second = resegmentCues(first)
+    expect(second.map((cue) => [cue.start, cue.end, cue.text])).toEqual(
+      first.map((cue) => [cue.start, cue.end, cue.text]),
+    )
+  })
+
+  it('resegment: false keeps the file cue-for-cue', () => {
+    const { cues } = parseSubtitleText(displayCut, { resegment: false })
+    expect(cues).toHaveLength(7)
+    expect(cues[0].text).toBe('A lot has been going on with AI over the')
+  })
+
+  it('preserves a real gap between cues as a sentence boundary', () => {
+    const gapped = [
+      'WEBVTT',
+      '',
+      '00:00:01.000 --> 00:00:02.000',
+      'Chapter one ends here',
+      '',
+      '00:00:08.000 --> 00:00:09.000',
+      'Chapter two begins',
+      '',
+    ].join('\n')
+
+    const { cues } = parseSubtitleText(gapped)
+    expect(cues.map((cue) => cue.text)).toEqual(['Chapter one ends here', 'Chapter two begins'])
+    expect(cues[1].start).toBe(8000)
   })
 })

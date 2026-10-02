@@ -1,4 +1,5 @@
-import type { Cue } from './schema'
+import { makeCue, type Cue, type CueWord } from './schema'
+import { segmentWords } from './segment'
 
 /**
  * Minimal, dependency-free WEBVTT / SRT reader and writer.
@@ -192,9 +193,76 @@ export function timedLinesToCues(lines: TimedLine[]): Cue[] {
   }))
 }
 
-export function parseSubtitleText(input: string): { cues: Cue[]; report: ParseReport } {
+/**
+ * Re-cut display-boundary cues into sentences.
+ *
+ * A sidecar caption is cut where the *player* wraps its line — every ~2
+ * seconds, mid-clause. Feeding those cues straight into the transcript gives
+ * exactly the fragments the whisper route exists to avoid: "A lot has been
+ * going on with AI over the" as a line you are meant to loop and study. The
+ * splitter (`segment.ts`, design doc §4.4) is already the project's answer; it
+ * only needs a word timeline, and a sidecar cue has none.
+ *
+ * So we synthesise one: each cue's span is distributed across its words
+ * proportionally to length (a longer word plausibly takes longer to say),
+ * punctuation stays attached, and the real gaps *between* cues are preserved.
+ * That is all `segmentWords` needs — it splits on sentence-ending punctuation
+ * and on silence, both of which survive this interpolation. The pseudo-word
+ * timings are then thrown away (`words: null`): they are good enough to place
+ * sentence boundaries, not honest enough to highlight against.
+ *
+ * Idempotent in practice: sentence cues already end in punctuation, so
+ * re-running the splitter on its own output reproduces it.
+ */
+export function resegmentCues(cues: Cue[]): Cue[] {
+  if (cues.length === 0) return cues
+
+  const words: CueWord[] = []
+  for (const cue of cues) {
+    const tokens = cue.text.split(/\s+/).filter((token) => token.length > 0)
+    if (tokens.length === 0) continue
+    const span = Math.max(1, cue.end - cue.start)
+    const totalWeight = tokens.reduce((sum, token) => sum + token.length + 1, 0)
+    let cursor = cue.start
+    for (const token of tokens) {
+      const slice = Math.max(1, Math.round((span * (token.length + 1)) / totalWeight))
+      const end = Math.min(cue.end, cursor + slice)
+      words.push({ w: token, s: cursor, e: end })
+      cursor = end
+    }
+  }
+
+  const { cues: sentences } = segmentWords(words)
+  return sentences.map((sentence, index) =>
+    makeCue({ ...sentence, id: index, words: null }),
+  )
+}
+
+export type ParseSubtitleOptions = {
+  /**
+   * Re-cut display-boundary cues into sentences (the default). Turn off only
+   * when the caller wants the file's own cue structure back — the serializer
+   * round-trips, for instance, care about lines, not sentences.
+   */
+  resegment?: boolean
+}
+
+export function parseSubtitleText(
+  input: string,
+  options: ParseSubtitleOptions = {},
+): { cues: Cue[]; report: ParseReport } {
   const report = parseTimedText(input)
-  return { cues: timedLinesToCues(report.lines), report }
+  const lines = timedLinesToCues(report.lines)
+  if (options.resegment === false) {
+    return { cues: lines, report }
+  }
+  const cues = resegmentCues(lines)
+  if (report.lines.length > 0) {
+    report.warnings.push(
+      `Re-split ${report.lines.length} caption line(s) into ${cues.length} sentence cue(s).`,
+    )
+  }
+  return { cues, report }
 }
 
 export function formatTimestamp(ms: number, separator: '.' | ',' = '.'): string {
