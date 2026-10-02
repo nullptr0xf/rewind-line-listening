@@ -201,6 +201,85 @@ describe('parseTimedText — ordering and overlap', () => {
   })
 })
 
+describe('parseTimedText — YouTube rolling captions', () => {
+  // The shape youtube-dl writes for auto-generated captions: each cue shows the
+  // previous cue's last line above the new text, and each real cue is followed
+  // by a ~10ms echo cue that re-displays the previous lines alone.
+  const rolling = [
+    'WEBVTT',
+    '',
+    '00:00:00.080 --> 00:00:02.550 align:start position:0%',
+    'A lot has been going on with AI over the',
+    '',
+    '00:00:02.550 --> 00:00:02.560 align:start position:0%',
+    'A lot has been going on with AI over the',
+    '',
+    '00:00:02.560 --> 00:00:04.470 align:start position:0%',
+    'A lot has been going on with AI over the',
+    'past few years. Prompt engineering,',
+    '',
+    '00:00:04.470 --> 00:00:04.480 align:start position:0%',
+    'past few years. Prompt engineering,',
+    '',
+  ].join('\n')
+
+  it('keeps each spoken line exactly once instead of two or three times', () => {
+    const report = parseTimedText(rolling)
+    expect(report.lines.map((line) => line.text)).toEqual([
+      'A lot has been going on with AI over the',
+      'past few years. Prompt engineering,',
+    ])
+  })
+
+  it('drops the 10ms echo cues outright and says so', () => {
+    const report = parseTimedText(rolling)
+    expect(report.lines.some((line) => line.endMs - line.startMs <= 20)).toBe(false)
+    expect(report.warnings.join()).toMatch(/rolling-caption echo/)
+  })
+
+  it('strips karaoke-tagged rolling lines by comparing cleaned text', () => {
+    // Real files carry word timings as <c> tags inside the line — the roll
+    // comparison has to happen after tags are stripped, not before.
+    const tagged = [
+      'WEBVTT',
+      '',
+      '00:00:00.000 --> 00:00:02.000',
+      'A<00:00:00.400><c> lot</c> has been going on',
+      '',
+      '00:00:02.000 --> 00:00:04.000',
+      'A lot has been going on',
+      'with<00:00:02.200><c> AI</c> lately',
+      '',
+    ].join('\n')
+
+    expect(parseTimedText(tagged).lines.map((line) => line.text)).toEqual([
+      'A lot has been going on',
+      'with AI lately',
+    ])
+  })
+
+  it('leaves a normal subtitle untouched even when a line genuinely repeats', () => {
+    // Repeated chorus — exact-match stripping must still eat it, but the cue
+    // itself (with its own new second line) must survive.
+    const vtt = [
+      'WEBVTT',
+      '',
+      '00:00:01.000 --> 00:00:02.000',
+      'Yeah yeah yeah',
+      '',
+      '00:00:03.000 --> 00:00:04.000',
+      'Yeah yeah yeah',
+      'here we go again',
+      '',
+    ].join('\n')
+
+    expect(parseTimedText(vtt).lines.map((line) => line.text)).toEqual([
+      'Yeah yeah yeah',
+      'here we go again',
+    ])
+  })
+})
+
 describe('timing helpers', () => {
   it('formats a WEBVTT timestamp with a dot', () => {
     expect(formatTimestamp(3_723_456)).toBe('01:02:03.456')

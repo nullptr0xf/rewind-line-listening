@@ -19,9 +19,11 @@ import type { Cue } from '@/lib/lesson/schema'
  *      -> this DOES go through React state, but it only changes once every few
  *         seconds, so the render rate collapses from ~60 Hz to ~0.5 Hz.
  *
- * Frame source: requestVideoFrameCallback when available (fires per presented
- * frame, carries an accurate mediaTime, and stops by itself while paused),
- * falling back to requestAnimationFrame.
+ * Frame source: requestVideoFrameCallback when available *and* the element
+ * actually has a picture — rvfc fires per presented frame, carries an accurate
+ * mediaTime, and stops by itself while paused, but for an audio-only file it
+ * never fires at all, which freezes the clock. Those fall back to
+ * requestAnimationFrame.
  *
  * This is a pure function of the available APIs. For testable logic see
  * lib/sync/findActiveCue.ts.
@@ -111,7 +113,13 @@ export function usePlaybackClock(
     const startLoop = () => {
       if (stopped) return
       stopLoop()
-      if (supportsRvfc) rvfcId = video.requestVideoFrameCallback(pumpFrame)
+      // rvfc fires per *presented video frame*. An audio-only file (m4a / mp3 /
+      // wav) never presents one, so with rvfc the clock freezes at the last
+      // seek and the transcript never advances while audio plays. Probe the
+      // element, not the capability: re-evaluated on every play / ratechange,
+      // so a file that gains its picture after metadata arrives recovers on
+      // the next play event.
+      if (supportsRvfc && video.videoWidth > 0) rvfcId = video.requestVideoFrameCallback(pumpFrame)
       else rafId = requestAnimationFrame(pumpRaf)
     }
 

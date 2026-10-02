@@ -3,7 +3,7 @@
 Status log for the English Listening project. Read this first — it is written so
 that a fresh session with no context can pick the work up.
 
-Last updated: 2026-09-24 (M0 complete; light study theme + waveform fixture — §14;
+Last updated: 2026-10-02 (three user-reported player bugs fixed — rolling-caption dedup in the sidecar parser, the audio-only clock freeze, and a video-mode re-download — §19)
 M1 complete except embedded-subtitle extraction, which was **dropped on purpose**
 at the user's request — the transcription pipeline now runs end to end from
 `ffmpeg` through `whisper-cli` to `lesson.json`, with live progress in the UI and
@@ -1748,3 +1748,61 @@ warnings underneath it.
   `lessons/`.
 
 
+
+
+---
+
+## 19. Three player bugs from the first real use (2026-10-02)
+
+The first genuine lesson (a 56-minute YouTube lecture, sidecar captions) surfaced
+three bugs at once. All three were diagnosed before being touched, and the
+diagnoses are the interesting part — none of them was where it looked like it
+was.
+
+### 19.1 Duplicate, sliding transcript lines — the sidecar parser, not whisper
+
+**Symptom:** every line of the transcript contained the previous line's tail,
+each spoken line appearing two or three times, 10ms apart.
+
+**Cause:** the transcript came from a YouTube *auto-generated* caption sidecar.
+Those files roll: each cue re-displays the previous cue's last line above the
+new text, and each real cue is followed by a ~10ms echo cue that shows the
+previous lines alone. `parseTimedText` joined each cue's lines and kept them
+all, so the rolling structure became duplicate cues in `lesson.json`.
+
+**Fix:** `stripRolledLines` in `lib/lesson/vtt.ts` — before joining, drop the
+longest prefix of a cue that exactly repeats a suffix of the previous cue *as
+displayed* (compared after tag-stripping, because YouTube's word timings are
+inline `<c>` tags). Echo cues reduce to nothing and are dropped, with a count
+in the report warnings. Exact-match only, on purpose: fuzzy matching would eat
+genuine repetition (song lyrics), and a normal subtitle almost never opens with
+its neighbour's last line. Re-ingest with `--force` rebuilds an existing
+lesson in place: `npm run ingest -- <file> --force`.
+
+### 19.2 The clock froze during playback on audio-only lessons — rvfc
+
+**Symptom:** the highlight and auto-scroll never moved while playing, though
+seeking updated them once.
+
+**Cause:** `usePlaybackClock` preferred `requestVideoFrameCallback` whenever
+the API existed. rvfc fires per *presented video frame* — and an audio-only
+file (this lesson was an m4a) never presents one. The clock only ticked via the
+seek-path `settle()`, which is why it looked alive but frozen.
+
+**Fix:** `startLoop` now probes `video.videoWidth > 0`, not API availability,
+and falls back to a rAF pump when there is no picture. Re-evaluated on every
+play/ratechange, so a file that gains metadata later recovers by itself.
+
+### 19.3 "No picture" — the download was audio-only by design, not a bug
+
+**Symptom:** the player showed the audio-only face for a video the user knows
+has a picture.
+
+**Cause:** the URL panel defaults to `audio` mode (a deliberate choice —
+whisper only reads audio and an m4a is ~5% the size). The file genuinely has no
+video stream; `VideoPane` was correct.
+
+**Fix:** none in code — the panel already has the audio/video toggle. The
+lesson was re-downloaded with `npm run fetch -- <url> --video`, which imports
+as a new lesson (different fingerprint); the old audio-only lesson can be
+removed from the library if it is in the way.

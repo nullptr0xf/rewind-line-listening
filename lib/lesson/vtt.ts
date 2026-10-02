@@ -53,6 +53,43 @@ function cleanText(raw: string): string {
     .trim()
 }
 
+/**
+ * Strip the lines a cue re-displays from the previous one — YouTube's
+ * auto-generated ("rolling") captions.
+ *
+ * These cues do not advance: each one shows the previous cue's last line(s)
+ * above the new text, and each real cue is followed by a ~10ms "echo" cue that
+ * shows the previous cue's lines alone. Parsed naively, every spoken line
+ * appears two or three times, sliding forward through the transcript — which is
+ * exactly what a per-sentence trainer cannot survive, because the duplicates
+ * carry no time of their own (they land 10ms apart).
+ *
+ * The fix is line-level, before joining: drop the longest prefix of the
+ * current cue that repeats a suffix of the previous cue *as displayed*. The
+ * comparison uses the previous cue's full lines (not the deduped remainder) —
+ * the echo cues are the display history, and they are what makes the chain
+ * connect. Cues that reduce to nothing (the echoes) are dropped outright.
+ *
+ * Deliberately exact-match only. A normal subtitle almost never opens with a
+ * line identical to its neighbour's last line, so the false-positive rate is
+ * negligible; fuzzy matching would risk eating real repetition (song lyrics).
+ */
+function stripRolledLines(lines: string[], previous: string[]): string[] {
+  if (previous.length === 0 || lines.length === 0) return lines
+  const max = Math.min(previous.length, lines.length)
+  for (let count = max; count > 0; count -= 1) {
+    let matched = true
+    for (let i = 0; i < count; i += 1) {
+      if (lines[i] !== previous[previous.length - count + i]) {
+        matched = false
+        break
+      }
+    }
+    if (matched) return lines.slice(count)
+  }
+  return lines
+}
+
 export function parseTimedText(input: string): ParseReport {
   const warnings: string[] = []
   const text = input.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n')
@@ -61,6 +98,9 @@ export function parseTimedText(input: string): ParseReport {
   const format: 'vtt' | 'srt' = header.toUpperCase().startsWith('WEBVTT') ? 'vtt' : 'srt'
 
   const lines: TimedLine[] = []
+  /** The previous cue's displayed lines — the rolling-caption reference. */
+  let previousCueLines: string[] = []
+  let rolledAway = 0
 
   for (const block of text.split(/\n{2,}/)) {
     const blockLines = block
@@ -92,7 +132,18 @@ export function parseTimedText(input: string): ParseReport {
     }
 
     const textLines = blockLines.slice(timingIndex + 1)
-    const cueText = cleanText(textLines.join(' '))
+      .map((line) => cleanText(line))
+      .filter((line) => line.length > 0)
+    const kept = stripRolledLines(textLines, previousCueLines)
+    previousCueLines = textLines
+    if (kept.length === 0) {
+      // Either a rolling-caption echo, or a cue whose text was entirely empty.
+      // Only the former is worth reporting; an empty cue was silently skipped
+      // before rolling support existed.
+      if (textLines.length > 0) rolledAway += 1
+      continue
+    }
+    const cueText = kept.join(' ')
     if (!cueText) continue
 
     if (endMs <= startMs) {
@@ -117,6 +168,11 @@ export function parseTimedText(input: string): ParseReport {
   }
   if (overlapCount > 0) {
     warnings.push(`Trimmed ${overlapCount} overlapping cue(s) so only one line can be active at a time.`)
+  }
+  if (rolledAway > 0) {
+    warnings.push(
+      `Dropped ${rolledAway} rolling-caption echo cue(s) that only re-displayed the previous line.`,
+    )
   }
 
   return { format, lines, warnings }
